@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video Transcriber</title>
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --card: #ffffff;
+      --text: #1d2330;
+      --muted: #6b7385;
+      --border: #dde1e8;
+      --accent: #2f6fed;
+      --accent-soft: #e8effd;
+      --error: #c62828;
+      --error-soft: #fdecec;
+      --success: #2e7d32;
+      --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14171c;
+        --card: #1d2128;
+        --text: #e6e9ef;
+        --muted: #9aa2b1;
+        --border: #2f3540;
+        --accent: #6c9cff;
+        --accent-soft: #23304a;
+        --error: #ff7b7b;
+        --error-soft: #3a2224;
+        --success: #7bd88f;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    .subtitle { margin: 0 0 24px; color: var(--muted); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .dropzone {
+      display: block;
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 36px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .dropzone:hover, .dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
+    .dropzone.disabled { pointer-events: none; opacity: .55; }
+    .dropzone strong { display: block; font-size: 1.05rem; margin-bottom: 4px; }
+    .dropzone span { color: var(--muted); font-size: .9rem; }
+    input[type=file] { display: none; }
+    .stage { display: flex; justify-content: space-between; gap: 12px; font-size: .95rem; margin-bottom: 8px; }
+    .stage .pct { font-variant-numeric: tabular-nums; color: var(--muted); }
+    .bar { height: 10px; background: var(--border); border-radius: 99px; overflow: hidden; }
+    .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+    .bar.indeterminate > div {
+      width: 30%;
+      animation: slide 1.2s ease-in-out infinite;
+    }
+    @keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+    .steps { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; font-size: .82rem; }
+    .steps li { list-style: none; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); }
+    .steps li.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+    .steps li.done { color: var(--success); border-color: var(--success); }
+    .steps { padding: 0; margin-bottom: 0; }
+    .error { background: var(--error-soft); color: var(--error); border-color: var(--error); white-space: pre-wrap; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+    .toolbar h2 { margin: 0 auto 0 0; font-size: 1.15rem; }
+    button {
+      font: inherit;
+      padding: 7px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .transcript { max-height: 60vh; overflow-y: auto; font-size: .95rem; }
+    .line { display: flex; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+    .line:last-child { border-bottom: 0; }
+    .ts { font-family: var(--mono); color: var(--accent); flex-shrink: 0; }
+    .hidden { display: none; }
+    .muted { color: var(--muted); font-size: .88rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Video Transcriber</h1>
+  <p class="subtitle">Transcrição local em português com Whisper (modelo small). Nada sai do seu computador.</p>
+
+  <section class="card">
+    <label id="dropzone" class="dropzone" for="file">
+      <strong>Arraste um vídeo aqui ou clique para escolher</strong>
+      <span>{{ extensions }} · até {{ max_minutes }} minutos</span>
+    </label>
+    <input id="file" type="file" accept="{{ accept }}">
+  </section>
+
+  <section id="progress-card" class="card hidden">
+    <div class="stage">
+      <span id="stage-text">Enviando…</span>
+      <span id="stage-pct" class="pct"></span>
+    </div>
+    <div id="bar" class="bar"><div></div></div>
+    <ul class="steps">
+      <li data-step="upload">1. Envio</li>
+      <li data-step="extracting">2. Extração do áudio</li>
+      <li data-step="loading">3. Modelo</li>
+      <li data-step="transcribing">4. Transcrição</li>
+    </ul>
+    <p id="file-name" class="muted"></p>
+  </section>
+
+  <section id="error-card" class="card error hidden"></section>
+
+  <section id="result-card" class="card hidden">
+    <div class="toolbar">
+      <h2>Transcrição</h2>
+      <button id="copy-btn" type="button">Copiar</button>
+      <button id="download-btn" type="button" class="primary">Baixar .txt</button>
+    </div>
+    <div id="transcript" class="transcript"></div>
+  </section>
+</main>
+
+<script>
+  const ALLOWED = "{{ accept }}".split(",");
+  const STEP_ORDER = ["upload", "extracting", "loading", "transcribing"];
+
+  const $ = (id) => document.getElementById(id);
+  const dropzone = $("dropzone");
+  const fileInput = $("file");
+  const progressCard = $("progress-card");
+  const errorCard = $("error-card");
+  const resultCard = $("result-card");
+  const bar = $("bar");
+
+  let currentJob = null;
+  let currentText = "";
+
+  function show(el, visible) { el.classList.toggle("hidden", !visible); }
+
+  function setProgress(text, pct, step) {
+    $("stage-text").textContent = text;
+    const indeterminate = pct === null;
+    bar.classList.toggle("indeterminate", indeterminate);
+    bar.firstElementChild.style.width = indeterminate ? "" : pct + "%";
+    $("stage-pct").textContent = indeterminate ? "" : Math.floor(pct) + "%";
+
+    const idx = STEP_ORDER.indexOf(step);
+    document.querySelectorAll(".steps li").forEach((li) => {
+      const i = STEP_ORDER.indexOf(li.dataset.step);
+      li.classList.toggle("active", i === idx);
+      li.classList.toggle("done", idx > i || step === "done");
+    });
+  }
+
+  function showError(message) {
+    errorCard.textContent = message;
+    show(errorCard, true);
+    show(progressCard, false);
+    dropzone.classList.remove("disabled");
+  }
+
+  function startUpload(file) {
+    const ext = "." + file.name.split(".").pop().toLowerCase();
+    if (!ALLOWED.includes(ext)) {
+      showError(`Formato não suportado: ${ext}. Use ${ALLOWED.join(", ")}.`);
+      return;
+    }
+
+    show(errorCard, false);
+    show(resultCard, false);
+    show(progressCard, true);
+    dropzone.classList.add("disabled");
+    $("file-name").textContent = file.name;
+    setProgress("Enviando vídeo…", 0, "upload");
+
+    const form = new FormData();
+    form.append("video", file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/upload");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) setProgress("Enviando vídeo…", (e.loaded / e.total) * 100, "upload");
+    };
+    xhr.upload.onload = () => setProgress("Verificando o vídeo…", null, "upload");
+    xhr.onerror = () => showError("Falha de rede ao enviar o vídeo.");
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (_) {}
+      if (xhr.status !== 200) {
+        showError(data.error || `Erro ${xhr.status} ao enviar o vídeo.`);
+        return;
+      }
+      currentJob = data.job_id;
+      poll();
+    };
+    xhr.send(form);
+  }
+
+  async function poll() {
+    let data;
+    try {
+      const res = await fetch(`/status/${currentJob}`);
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+    } catch (err) {
+      showError("Não foi possível consultar o progresso: " + err.message);
+      return;
+    }
+
+    switch (data.status) {
+      case "queued":
+        setProgress(data.message, null, "upload");
+        break;
+      case "extracting":
+      case "loading":
+        setProgress(data.message, null, data.status);
+        break;
+      case "transcribing":
+        setProgress(data.message, data.progress, "transcribing");
+        break;
+      case "done":
+        setProgress(data.message, 100, "done");
+        renderResult(data);
+        return;
+      case "error":
+        showError(data.message);
+        return;
+    }
+    setTimeout(poll, 1000);
+  }
+
+  function renderResult(data) {
+    currentText = data.text;
+    const container = $("transcript");
+    container.replaceChildren();
+    if (!data.segments.length) {
+      container.textContent = "Nenhuma fala detectada no vídeo.";
+    }
+    for (const seg of data.segments) {
+      const line = document.createElement("div");
+      line.className = "line";
+      const ts = document.createElement("span");
+      ts.className = "ts";
+      ts.textContent = `[${seg.timestamp}]`;
+      const txt = document.createElement("span");
+      txt.textContent = seg.text;
+      line.append(ts, txt);
+      container.append(line);
+    }
+    show(progressCard, false);
+    show(resultCard, true);
+    dropzone.classList.remove("disabled");
+    fileInput.value = "";
+  }
+
+  $("copy-btn").addEventListener("click", async () => {
+    const btn = $("copy-btn");
+    try {
+      await navigator.clipboard.writeText(currentText);
+      btn.textContent = "Copiado!";
+    } catch (_) {
+      btn.textContent = "Falha ao copiar";
+    }
+    setTimeout(() => (btn.textContent = "Copiar"), 1500);
+  });
+
+  $("download-btn").addEventListener("click", () => {
+    if (currentJob) window.location.href = `/download/${currentJob}`;
+  });
+
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files[0]) startUpload(fileInput.files[0]);
+  });
+
+  ["dragenter", "dragover"].forEach((evt) =>
+    dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.add("over"); })
+  );
+  ["dragleave", "drop"].forEach((evt) =>
+    dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.remove("over"); })
+  );
+  dropzone.addEventListener("drop", (e) => {
+    const file = e.dataTransfer.files[0];
+    if (file) startUpload(file);
+  });
+</script>
+</body>
+</html>

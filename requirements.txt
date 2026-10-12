@@ -1,0 +1,6 @@
+flask>=3.0,<4
+openai-whisper>=20250625
+# Instaladas pelo openai-whisper (listadas para deixar explícito):
+torch>=2.5
+numpy
+tqdm

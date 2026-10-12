@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Configuração local
+.env
+
+# Mídia e saídas
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wav
+*.txt
+!requirements.txt
+
+# Editores / SO
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
