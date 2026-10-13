@@ -2,7 +2,7 @@
 
 Aplicação web local que transcreve vídeos em português usando o [OpenAI Whisper](https://github.com/openai/whisper) (modelo `small`), rodando 100% no seu computador, sem API key.
 
-- Upload de vídeos **MP4, MOV, AVI e MKV** de até **30 minutos**
+- Upload de vídeos **MP4, MOV, AVI e MKV** de até **45 minutos**
 - Extração do áudio com **ffmpeg**
 - Transcrição com timestamps no formato `[00:00] texto`
 - Barra de progresso (envio → extração → modelo → transcrição)

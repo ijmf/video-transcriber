@@ -27,7 +27,7 @@ import whisper
 whisper_transcribe = importlib.import_module("whisper.transcribe")
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
-MAX_DURATION_SECONDS = 30 * 60
+MAX_DURATION_SECONDS = 45 * 60
 MODEL_NAME = "small"
 LANGUAGE = "pt"
 
