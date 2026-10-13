@@ -13,6 +13,7 @@ import importlib
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,18 +25,19 @@ import uuid
 import anthropic
 import assemblyai as aai
 from dotenv import load_dotenv
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, abort, jsonify, render_template, request
 from werkzeug.utils import secure_filename
 
 load_dotenv()
 
-ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
+import ia  # noqa: E402 — lê o .env ao ser importado
+
+# .webm é o formato das gravações feitas pelo navegador na landing.
+ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".mp3", ".webm"}
 MAX_DURATION_SECONDS = 45 * 60
 LANGUAGE = "pt"
 WHISPER_MODEL = "small"
 ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
-CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "medium")
 
 # Com chave da AssemblyAI a transcrição identifica os falantes; sem ela, cai
 # no Whisper local (sem falantes), como na primeira versão do projeto.
@@ -47,6 +49,17 @@ app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024 * 1024  # 4 GB
 jobs = {}
 jobs_lock = threading.Lock()
 job_queue = queue.Queue()
+
+# O app só atende pelo próprio computador. Recusar qualquer outro Host barra o
+# DNS rebinding: um site que aponte o domínio dele para 127.0.0.1 não passa daqui.
+ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+
+
+@app.before_request
+def only_local_host():
+    hostname = request.host.rsplit(":", 1)[0] if not request.host.endswith("]") else request.host
+    if hostname.lower() not in ALLOWED_HOSTS:
+        abort(403)
 
 
 # --- Utilitários ---------------------------------------------------------------
@@ -100,11 +113,25 @@ def get_duration(path):
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        raise ValueError("Não foi possível ler o vídeo. O arquivo pode estar corrompido.")
+        raise ValueError("Não foi possível ler o arquivo. Ele pode estar corrompido.")
     try:
         return float(json.loads(result.stdout)["format"]["duration"])
     except (KeyError, ValueError, TypeError):
-        raise ValueError("Não foi possível determinar a duração do vídeo.")
+        # Gravações do navegador (MediaRecorder) não trazem a duração no cabeçalho:
+        # lê o áudio inteiro e usa o último tempo que o ffmpeg informa.
+        return decoded_duration(path)
+
+
+def decoded_duration(path):
+    result = subprocess.run(
+        ["ffmpeg", "-nostdin", "-i", path, "-vn", "-f", "null", "-"],
+        capture_output=True, text=True, check=False,
+    )
+    times = re.findall(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr)
+    if result.returncode != 0 or not times:
+        raise ValueError("Não foi possível determinar a duração do arquivo.")
+    h, m, sec = times[-1]
+    return int(h) * 3600 + int(m) * 60 + float(sec)
 
 
 def extract_audio(video_path, audio_path):
@@ -337,32 +364,7 @@ Use só o que foi dito na transcrição; não invente responsáveis, prazos nem 
 
 
 def generate_pautas(transcript_text):
-    client = anthropic.Anthropic()
-    with client.beta.messages.stream(
-        model=CLAUDE_MODEL,
-        max_tokens=32000,
-        system=PAUTAS_SYSTEM,
-        messages=[{
-            "role": "user",
-            "content": f"<transcricao>\n{transcript_text}\n</transcricao>",
-        }],
-        output_config={
-            "effort": CLAUDE_EFFORT,
-            "format": {"type": "json_schema", "schema": PAUTAS_SCHEMA},
-        },
-        # Se o classificador de segurança recusar por engano, a API refaz o
-        # pedido em outro modelo em vez de devolver a recusa.
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-    ) as stream:
-        response = stream.get_final_message()
-
-    if response.stop_reason == "refusal":
-        raise RuntimeError("O Claude recusou organizar esta transcrição.")
-    if response.stop_reason == "max_tokens":
-        raise RuntimeError("A resposta do Claude foi cortada por ser longa demais.")
-    text = next(b.text for b in response.content if b.type == "text")
-    return json.loads(text)
+    return ia.generate(transcript_text, PAUTAS_SYSTEM, PAUTAS_SCHEMA)
 
 
 def pautas_markdown(job):
@@ -418,7 +420,7 @@ def process_job(job_id):
     job = jobs[job_id]
     workdir = job["workdir"]
     try:
-        update_job(job_id, status="extracting", message="Extraindo áudio do vídeo…", progress=0)
+        update_job(job_id, status="extracting", message="Extraindo o áudio…", progress=0)
         ext = ".mp3" if TRANSCRIBER == "assemblyai" else ".wav"
         audio_path = os.path.join(workdir, "audio" + ext)
         extract_audio(job["video_path"], audio_path)
@@ -503,7 +505,7 @@ def upload():
     if duration > MAX_DURATION_SECONDS:
         shutil.rmtree(workdir, ignore_errors=True)
         return jsonify(
-            error=f"O vídeo tem {format_timestamp(duration)}; o limite é "
+            error=f"O arquivo tem {format_timestamp(duration)}; o limite é "
                   f"{MAX_DURATION_SECONDS // 60} minutos."
         ), 400
 
@@ -571,9 +573,11 @@ def pautas(job_id):
 
     try:
         result = generate_pautas(transcript_text)
+    except ia.IAError as exc:
+        return jsonify(error=str(exc)), 502
     except anthropic.AuthenticationError:
-        return jsonify(error="Chave da Anthropic inválida ou ausente. "
-                             "Confira ANTHROPIC_API_KEY no arquivo .env."), 500
+        return jsonify(error="A chave do Claude (Anthropic) foi recusada. "
+                             "Confira em IA das pautas."), 500
     except anthropic.RateLimitError:
         return jsonify(error="Limite de uso da API da Anthropic atingido. "
                              "Tente de novo em instantes."), 429
@@ -587,6 +591,65 @@ def pautas(job_id):
     with jobs_lock:
         job["pautas"] = result
     return jsonify(pautas=result)
+
+
+# --- IA das pautas -------------------------------------------------------------------
+
+
+def require_same_origin():
+    """Só a própria página pode mudar a configuração: outro site aberto no navegador
+    não consegue trocar a chave nem apontar as pautas para um servidor dele."""
+    origin = request.headers.get("Origin")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        abort(403)
+    if not request.is_json:
+        abort(415)
+
+
+@app.get("/ia")
+def ia_state():
+    return jsonify(ia.public_state())
+
+
+@app.post("/ia")
+def ia_save():
+    require_same_origin()
+    try:
+        return jsonify(ia.update(request.get_json(silent=True) or {}))
+    except ia.IAError as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.post("/ia/esquecer")
+def ia_forget():
+    require_same_origin()
+    provider = (request.get_json(silent=True) or {}).get("provider")
+    if provider not in ia.PROVIDERS:
+        return jsonify(error="Provedor desconhecido."), 400
+    return jsonify(ia.forget_key(provider))
+
+
+@app.post("/ia/testar")
+def ia_test():
+    require_same_origin()
+    data = request.get_json(silent=True) or {}
+    try:
+        models = ia.list_models(data.get("provider"), data.get("chave"), data.get("ollama_url"))
+    except ia.IAError as exc:
+        return jsonify(error=str(exc)), 400
+    return jsonify(modelos=models)
+
+
+@app.post("/ia/openrouter")
+def ia_openrouter():
+    require_same_origin()
+    data = request.get_json(silent=True) or {}
+    if not data.get("code") or not data.get("verifier"):
+        return jsonify(error="Login incompleto. Tente entrar de novo."), 400
+    try:
+        return jsonify(ia.openrouter_exchange(data["code"], data["verifier"]))
+    except ia.IAError as exc:
+        return jsonify(error=str(exc)), 400
 
 
 @app.get("/download/<job_id>")
@@ -621,7 +684,8 @@ if __name__ == "__main__":
     if TRANSCRIBER == "whisper":
         print("AVISO: ASSEMBLYAI_API_KEY não definida — usando Whisper local, sem "
               "identificação de falantes.")
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("AVISO: ANTHROPIC_API_KEY não definida — a organização por pautas não vai funcionar.")
+    if not ia.is_configured(ia.current_provider()):
+        print("AVISO: a IA das pautas ainda não está configurada — escolha o provedor em "
+              "\"IA das pautas\", no topo da página.")
     print("Abra http://127.0.0.1:5000 no navegador.")
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)

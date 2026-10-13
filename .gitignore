@@ -11,8 +11,10 @@ __pycache__/
 venv/
 env/
 
-# Configuração local
+# Configuração local (chaves de API ficam só na máquina de cada pessoa)
 .env
+ia_config.json
+ia_config.json.tmp
 
 # Mídia e saídas
 *.mp4
