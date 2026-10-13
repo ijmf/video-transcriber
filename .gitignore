@@ -23,7 +23,7 @@ ia_config.json.tmp
 *.mkv
 *.wav
 *.txt
-!requirements.txt
+!requirements*.txt
 
 # Editores / SO
 .vscode/

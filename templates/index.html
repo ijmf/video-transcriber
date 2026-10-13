@@ -526,7 +526,7 @@
     const btn = $("pautas-go"), status = $("pautas-status");
     btn.disabled = true;
     status.classList.remove("err");
-    status.textContent = "Organizando a transcrição com o Claude. Costuma levar de 30 segundos a 2 minutos…";
+    status.textContent = `Organizando a transcrição com ${iaProv(iaState.provider).nome}. Costuma levar de 30 segundos a 2 minutos…`;
     try {
       const res = await fetch(`/pautas/${job}`, { method: "POST" });
       const data = await res.json();

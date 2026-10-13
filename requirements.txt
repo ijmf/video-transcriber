@@ -5,8 +5,3 @@ assemblyai>=0.40
 # Organização por pautas (Claude pelo SDK; OpenAI, Gemini, OpenRouter e Ollama por httpx)
 anthropic>=1.13
 httpx>=0.28
-# Transcrição local (usada quando não há ASSEMBLYAI_API_KEY)
-openai-whisper>=20250625
-torch>=2.5
-numpy
-tqdm

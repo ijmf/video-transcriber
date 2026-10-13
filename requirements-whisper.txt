@@ -1,0 +1,5 @@
+# Transcrição local, usada quando não há ASSEMBLYAI_API_KEY (~3 GB com o PyTorch)
+openai-whisper>=20250625
+torch>=2.5
+numpy
+tqdm
