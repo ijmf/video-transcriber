@@ -4,6 +4,8 @@
 
 Aplicação web que transcreve vídeos em português, identifica quem está falando e organiza a conversa em pautas.
 
+<!-- GIF da gravação e das pautas: docs/demo.gif (a gravar) -->
+
 - Upload de vídeos **MP4, MOV, AVI e MKV** ou áudio **MP3**, de até **45 minutos**
 - **Gravar a reunião** direto na página: microfone + áudio do computador (Chrome ou Edge)
 - Extração do áudio com **ffmpeg**
@@ -65,6 +67,23 @@ Use **Testar conexão** para listar os modelos da sua conta e **Salvar**. A esco
 > O PyTorch instalado pelo pip no Windows é a versão CPU. Se você tiver GPU NVIDIA e for usar o Whisper local,
 > instale a versão CUDA antes do `requirements-whisper.txt` (veja https://pytorch.org/get-started/locally/).
 
+### Com Docker
+
+Só precisa do [Docker](https://docs.docker.com/get-docker/); Python e ffmpeg já vêm na imagem.
+
+```bash
+git clone https://github.com/ijmf/video-transcriber.git
+cd video-transcriber
+cp .env.example .env
+docker compose up -d --build
+```
+
+Abra http://127.0.0.1:5000. A porta fica publicada só em `127.0.0.1`, então o app continua acessível apenas deste computador. A escolha da IA e o modelo do Whisper ficam no volume `dados` e sobrevivem a atualizações da imagem (`git pull` e `docker compose up -d --build`).
+
+- Sem chave da AssemblyAI, construa a imagem com o Whisper local (CPU; a imagem passa de ~0,9 GB para ~3,6 GB): `WHISPER=1 docker compose up -d --build`.
+- Ollama instalado fora do Docker: em **IA das pautas**, use o endereço `http://host.docker.internal:11434`.
+- Parar: `docker compose down` (o volume com a configuração continua lá).
+
 ## Uso
 
 ```powershell
@@ -125,6 +144,9 @@ video-transcriber/
 ├── requirements-whisper.txt  # Whisper local (opcional)
 ├── requirements-dev.txt      # testes e auditoria
 ├── pytest.ini
+├── Dockerfile          # Python 3.13 + ffmpeg (WHISPER=1 inclui o Whisper)
+├── compose.yaml        # docker compose up -d --build
+├── .dockerignore
 ├── .env.example        # modelo do .env com as chaves
 ├── .gitignore
 ├── README.md
@@ -133,7 +155,7 @@ video-transcriber/
 │   └── index.html      # página única (HTML + CSS + JS)
 ├── tests/              # pytest; tests/e2e com Playwright
 └── .github/workflows/
-    └── testes.yml      # CI: testes + pip-audit
+    └── testes.yml      # CI: testes, pip-audit e imagem Docker
 ```
 
 ## Licença

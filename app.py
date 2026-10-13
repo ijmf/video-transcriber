@@ -237,7 +237,8 @@ def load_whisper():
         except ModuleNotFoundError:
             raise RuntimeError(
                 "O Whisper local não está instalado. Instale com "
-                "pip install -r requirements-whisper.txt ou defina ASSEMBLYAI_API_KEY no .env."
+                "pip install -r requirements-whisper.txt (no Docker: WHISPER=1 docker compose up "
+                "--build) ou defina ASSEMBLYAI_API_KEY no .env."
             )
         # "whisper.transcribe" é sobrescrito pela função de mesmo nome no
         # __init__ do pacote; importlib devolve o módulo de fato.
@@ -693,5 +694,8 @@ if __name__ == "__main__":
     if not ia.is_configured(ia.current_provider()):
         print("AVISO: a IA das pautas ainda não está configurada — escolha o provedor em "
               "\"IA das pautas\", no topo da página.")
-    print("Abra http://127.0.0.1:5000 no navegador.")
-    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
+    # HOST=0.0.0.0 só dentro do Docker, que publica a porta apenas em 127.0.0.1.
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "5000"))
+    print(f"Abra http://127.0.0.1:{port} no navegador.")
+    app.run(host=host, port=port, debug=False, threaded=True)

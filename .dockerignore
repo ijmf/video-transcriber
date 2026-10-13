@@ -1,0 +1,22 @@
+# Só o código do app entra na imagem: chaves, ambiente local e testes ficam de fora.
+.git
+.github
+.venv
+venv
+env
+.env
+ia_config.json
+ia_config.json.tmp
+__pycache__
+*.py[cod]
+.pytest_cache
+tests
+test-results
+divulgacao-linkedin
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.mp3
+*.webm
+*.wav

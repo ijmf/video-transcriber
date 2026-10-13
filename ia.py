@@ -15,7 +15,9 @@ import threading
 import anthropic
 import httpx
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ia_config.json")
+# No Docker, IA_CONFIG aponta para um volume, para a escolha sobreviver a uma nova imagem.
+CONFIG_PATH = os.environ.get("IA_CONFIG") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "ia_config.json")
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "medium")
 TIMEOUT = httpx.Timeout(900.0, connect=15.0)  # Ollama na CPU pode levar vários minutos
