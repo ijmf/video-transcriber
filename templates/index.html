@@ -16,6 +16,13 @@
       --error: #c62828;
       --error-soft: #fdecec;
       --success: #2e7d32;
+      --suggest-soft: #fff6db;
+      --spk-1: #2f6fed;
+      --spk-2: #b5470b;
+      --spk-3: #1b7f4b;
+      --spk-4: #8a3ab9;
+      --spk-5: #b0204a;
+      --spk-6: #0f7c8c;
       --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
     }
     @media (prefers-color-scheme: dark) {
@@ -30,6 +37,13 @@
         --error: #ff7b7b;
         --error-soft: #3a2224;
         --success: #7bd88f;
+        --suggest-soft: #3a3320;
+        --spk-1: #6c9cff;
+        --spk-2: #f0a35e;
+        --spk-3: #6fd39a;
+        --spk-4: #c99bf0;
+        --spk-5: #f58aa5;
+        --spk-6: #5fd0dd;
       }
     }
     * { box-sizing: border-box; }
@@ -73,11 +87,10 @@
       animation: slide 1.2s ease-in-out infinite;
     }
     @keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
-    .steps { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; font-size: .82rem; }
+    .steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 0; padding: 0; font-size: .82rem; }
     .steps li { list-style: none; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--border); color: var(--muted); }
     .steps li.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
     .steps li.done { color: var(--success); border-color: var(--success); }
-    .steps { padding: 0; margin-bottom: 0; }
     .error { background: var(--error-soft); color: var(--error); border-color: var(--error); white-space: pre-wrap; }
     .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
     .toolbar h2 { margin: 0 auto 0 0; font-size: 1.15rem; }
@@ -91,19 +104,50 @@
       cursor: pointer;
     }
     button:hover { border-color: var(--accent); }
+    button:disabled { opacity: .55; cursor: default; }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     .transcript { max-height: 60vh; overflow-y: auto; font-size: .95rem; }
     .line { display: flex; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--border); }
     .line:last-child { border-bottom: 0; }
-    .ts { font-family: var(--mono); color: var(--accent); flex-shrink: 0; }
+    .ts { font-family: var(--mono); color: var(--muted); flex-shrink: 0; }
+    .spk { font-weight: 600; margin-right: 4px; }
     .hidden { display: none; }
     .muted { color: var(--muted); font-size: .88rem; }
+
+    .speakers { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin-bottom: 12px; }
+    .speaker { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; }
+    .speaker label { font-weight: 600; }
+    .speaker input {
+      font: inherit;
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+    }
+    .speaker input.suggested { background: var(--suggest-soft); }
+    .speaker small { color: var(--muted); }
+
+    .pautas h3 { margin: 18px 0 6px; font-size: 1rem; }
+    .pautas h3:first-child { margin-top: 0; }
+    .pautas p { margin: 0; }
+    .pautas ul { margin: 0; padding-left: 20px; }
+    .pautas li { margin: 3px 0; }
+    .pautas .ts { margin-left: 6px; font-size: .85rem; }
+    .pautas .meta { color: var(--muted); font-size: .88rem; }
+    .spinner {
+      display: inline-block; width: 14px; height: 14px; margin-right: 8px; vertical-align: -2px;
+      border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
 <main>
   <h1>Video Transcriber</h1>
-  <p class="subtitle">Transcrição local em português com Whisper (modelo small). Nada sai do seu computador.</p>
+  <p class="subtitle">Transcrição em português com identificação de quem fala e organização por pautas.<br>
+    <span class="muted">Transcrição: {{ engine }}</span></p>
 
   <section class="card">
     <label id="dropzone" class="dropzone" for="file">
@@ -122,13 +166,33 @@
     <ul class="steps">
       <li data-step="upload">1. Envio</li>
       <li data-step="extracting">2. Extração do áudio</li>
-      <li data-step="loading">3. Modelo</li>
+      <li data-step="prepare">3. Preparação</li>
       <li data-step="transcribing">4. Transcrição</li>
     </ul>
     <p id="file-name" class="muted"></p>
   </section>
 
   <section id="error-card" class="card error hidden"></section>
+
+  <section id="speakers-card" class="card hidden">
+    <div class="toolbar">
+      <h2>Quem está falando</h2>
+      <button id="save-speakers-btn" type="button" class="primary">Salvar nomes</button>
+    </div>
+    <div id="speakers" class="speakers"></div>
+    <p id="speakers-hint" class="muted">Dê nome a cada falante; a transcrição e as pautas passam a usar esses nomes.</p>
+  </section>
+
+  <section id="pautas-card" class="card hidden">
+    <div class="toolbar">
+      <h2>Pautas</h2>
+      <button id="pautas-btn" type="button" class="primary">Organizar por pautas</button>
+      <button id="copy-pautas-btn" type="button" class="hidden">Copiar</button>
+      <button id="download-pautas-btn" type="button" class="hidden">Baixar .md</button>
+    </div>
+    <p id="pautas-status" class="muted">Gera objetivo, contexto, problemas levantados, decisões, soluções, pendências e próximos passos a partir da transcrição.</p>
+    <div id="pautas" class="pautas"></div>
+  </section>
 
   <section id="result-card" class="card hidden">
     <div class="toolbar">
@@ -142,20 +206,26 @@
 
 <script>
   const ALLOWED = "{{ accept }}".split(",");
-  const STEP_ORDER = ["upload", "extracting", "loading", "transcribing"];
+  const STEP_ORDER = ["upload", "extracting", "prepare", "transcribing"];
+  const STATUS_STEP = { queued: "upload", extracting: "extracting", uploading: "prepare", loading: "prepare", transcribing: "transcribing" };
 
   const $ = (id) => document.getElementById(id);
   const dropzone = $("dropzone");
   const fileInput = $("file");
-  const progressCard = $("progress-card");
-  const errorCard = $("error-card");
-  const resultCard = $("result-card");
   const bar = $("bar");
 
   let currentJob = null;
+  let segments = [];
+  let speakers = {};
   let currentText = "";
+  let pautasData = null;
 
   function show(el, visible) { el.classList.toggle("hidden", !visible); }
+  function el(tag, props = {}, ...children) {
+    const node = Object.assign(document.createElement(tag), props);
+    node.append(...children);
+    return node;
+  }
 
   function setProgress(text, pct, step) {
     $("stage-text").textContent = text;
@@ -173,11 +243,22 @@
   }
 
   function showError(message) {
-    errorCard.textContent = message;
-    show(errorCard, true);
-    show(progressCard, false);
+    $("error-card").textContent = message;
+    show($("error-card"), true);
+    show($("progress-card"), false);
     dropzone.classList.remove("disabled");
   }
+
+  function resetResult() {
+    ["error-card", "speakers-card", "pautas-card", "result-card"].forEach((id) => show($(id), false));
+    pautasData = null;
+    $("pautas").replaceChildren();
+    show($("copy-pautas-btn"), false);
+    show($("download-pautas-btn"), false);
+    $("pautas-btn").textContent = "Organizar por pautas";
+  }
+
+  // --- Upload e progresso ---------------------------------------------------
 
   function startUpload(file) {
     const ext = "." + file.name.split(".").pop().toLowerCase();
@@ -186,9 +267,8 @@
       return;
     }
 
-    show(errorCard, false);
-    show(resultCard, false);
-    show(progressCard, true);
+    resetResult();
+    show($("progress-card"), true);
     dropzone.classList.add("disabled");
     $("file-name").textContent = file.name;
     setProgress("Enviando vídeo…", 0, "upload");
@@ -227,51 +307,208 @@
       return;
     }
 
-    switch (data.status) {
-      case "queued":
-        setProgress(data.message, null, "upload");
-        break;
-      case "extracting":
-      case "loading":
-        setProgress(data.message, null, data.status);
-        break;
-      case "transcribing":
-        setProgress(data.message, data.progress, "transcribing");
-        break;
-      case "done":
-        setProgress(data.message, 100, "done");
-        renderResult(data);
-        return;
-      case "error":
-        showError(data.message);
-        return;
+    if (data.status === "done") {
+      setProgress(data.message, 100, "done");
+      renderResult(data);
+      return;
     }
+    if (data.status === "error") {
+      showError(data.message);
+      return;
+    }
+    // Só o Whisper local informa porcentagem; nas outras etapas a barra fica em movimento.
+    const pct = data.status === "transcribing" && data.engine === "whisper" ? data.progress : null;
+    setProgress(data.message, pct, STATUS_STEP[data.status] || "upload");
     setTimeout(poll, 1000);
   }
 
+  // --- Transcrição e falantes -----------------------------------------------
+
+  function speakerColor(code) {
+    const index = Object.keys(speakers).indexOf(code);
+    return `var(--spk-${(index % 6) + 1})`;
+  }
+
   function renderResult(data) {
+    segments = data.segments;
+    speakers = data.speakers;
     currentText = data.text;
-    const container = $("transcript");
-    container.replaceChildren();
-    if (!data.segments.length) {
-      container.textContent = "Nenhuma fala detectada no vídeo.";
-    }
-    for (const seg of data.segments) {
-      const line = document.createElement("div");
-      line.className = "line";
-      const ts = document.createElement("span");
-      ts.className = "ts";
-      ts.textContent = `[${seg.timestamp}]`;
-      const txt = document.createElement("span");
-      txt.textContent = seg.text;
-      line.append(ts, txt);
-      container.append(line);
-    }
-    show(progressCard, false);
-    show(resultCard, true);
+    renderTranscript();
+    renderSpeakers();
+
+    show($("progress-card"), false);
+    show($("speakers-card"), Object.keys(speakers).length > 0);
+    show($("pautas-card"), segments.length > 0);
+    show($("result-card"), true);
     dropzone.classList.remove("disabled");
     fileInput.value = "";
   }
+
+  function renderTranscript() {
+    const container = $("transcript");
+    container.replaceChildren();
+    if (!segments.length) {
+      container.textContent = "Nenhuma fala detectada no vídeo.";
+      return;
+    }
+    for (const seg of segments) {
+      const body = el("span");
+      if (seg.speaker) {
+        const name = el("span", { className: "spk", textContent: speakers[seg.speaker] + ":" });
+        name.style.color = speakerColor(seg.speaker);
+        body.append(name);
+      }
+      body.append(seg.text);
+      container.append(el("div", { className: "line" },
+        el("span", { className: "ts", textContent: `[${seg.timestamp}]` }), body));
+    }
+  }
+
+  function renderSpeakers(suggestions = {}) {
+    const container = $("speakers");
+    container.replaceChildren();
+    for (const [code, name] of Object.entries(speakers)) {
+      const input = el("input", { type: "text", value: name, maxLength: 60, id: `spk-${code}` });
+      input.dataset.code = code;
+      const label = el("label", { htmlFor: input.id, textContent: `Falante ${code}` });
+      label.style.color = speakerColor(code);
+      const box = el("div", { className: "speaker" }, label, input);
+      if (suggestions[code]) {
+        input.value = suggestions[code];
+        input.classList.add("suggested");
+        box.append(el("small", { textContent: "Sugerido pela IA — confira e clique em Salvar nomes" }));
+      }
+      container.append(box);
+    }
+  }
+
+  $("save-speakers-btn").addEventListener("click", async () => {
+    const btn = $("save-speakers-btn");
+    const names = {};
+    document.querySelectorAll("#speakers input").forEach((i) => { names[i.dataset.code] = i.value; });
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/speakers/${currentJob}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(names),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+      speakers = data.speakers;
+      currentText = data.text;
+      renderSpeakers();
+      renderTranscript();
+      btn.textContent = "Salvo!";
+      if (pautasData) {
+        $("pautas-status").textContent = "Os nomes mudaram. Clique em Refazer pautas para atualizá-las.";
+      }
+    } catch (err) {
+      btn.textContent = "Falha ao salvar";
+      alert("Não foi possível salvar os nomes: " + err.message);
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => (btn.textContent = "Salvar nomes"), 1500);
+    }
+  });
+
+  // --- Pautas ------------------------------------------------------------------
+
+  $("pautas-btn").addEventListener("click", async () => {
+    const btn = $("pautas-btn");
+    const status = $("pautas-status");
+    btn.disabled = true;
+    status.replaceChildren(el("span", { className: "spinner" }),
+      "Organizando a transcrição com o Claude… isso costuma levar de 30 segundos a 2 minutos.");
+    try {
+      const res = await fetch(`/pautas/${currentJob}`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+      pautasData = data.pautas;
+      renderPautas();
+      status.textContent = "";
+      btn.textContent = "Refazer pautas";
+      show($("copy-pautas-btn"), true);
+      show($("download-pautas-btn"), true);
+    } catch (err) {
+      status.textContent = "";
+      showErrorInline(status, err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function showErrorInline(target, message) {
+    const span = el("span", { textContent: message });
+    span.style.color = "var(--error)";
+    target.replaceChildren(span);
+  }
+
+  function itemNode(item, extra = "") {
+    const li = el("li", { textContent: item.descricao });
+    if (extra) li.append(el("span", { className: "meta", textContent: ` (${extra})` }));
+    if (item.timestamp) li.append(el("span", { className: "ts", textContent: `[${item.timestamp}]` }));
+    return li;
+  }
+
+  function renderPautas() {
+    const p = pautasData;
+    const root = $("pautas");
+    root.replaceChildren();
+    const section = (title, ...content) => root.append(el("h3", { textContent: title }), ...content);
+
+    if (p.titulo) root.append(el("p", { className: "meta", textContent: p.titulo }));
+    if (p.objetivo) section("Objetivo", el("p", { textContent: p.objetivo }));
+    if (p.contexto) section("Contexto", el("p", { textContent: p.contexto }));
+    if (p.participantes.length) {
+      section("Participantes", el("ul", {}, ...p.participantes.map((x) =>
+        el("li", { textContent: x.rotulo + (x.papel ? ` — ${x.papel}` : "") }))));
+    }
+    const lists = [
+      ["Problemas levantados", p.problemas_levantados],
+      ["Decisões", p.decisoes],
+      ["Soluções propostas", p.solucoes_propostas],
+    ];
+    for (const [title, items] of lists) {
+      if (items.length) section(title, el("ul", {}, ...items.map((i) => itemNode(i))));
+    }
+    if (p.pendencias.length) {
+      section("Pendências", el("ul", {}, ...p.pendencias.map((i) => itemNode(i,
+        [i.responsavel && `responsável: ${i.responsavel}`, i.prazo && `prazo: ${i.prazo}`]
+          .filter(Boolean).join("; ")))));
+    }
+    if (p.proximos_passos.length) {
+      section("Próximos passos", el("ul", {}, ...p.proximos_passos.map((i) => itemNode(i))));
+    }
+
+    // Nomes sugeridos pela IA para falantes ainda com rótulo genérico.
+    const suggestions = {};
+    for (const part of p.participantes) {
+      const code = Object.keys(speakers).find((c) => speakers[c] === part.rotulo);
+      if (code && part.nome_sugerido && speakers[code] === `Falante ${code}`) {
+        suggestions[code] = part.nome_sugerido;
+      }
+    }
+    if (Object.keys(suggestions).length) renderSpeakers(suggestions);
+  }
+
+  $("copy-pautas-btn").addEventListener("click", async () => {
+    const btn = $("copy-pautas-btn");
+    try {
+      const res = await fetch(`/download/${currentJob}?tipo=pautas`);
+      await navigator.clipboard.writeText(await res.text());
+      btn.textContent = "Copiado!";
+    } catch (_) {
+      btn.textContent = "Falha ao copiar";
+    }
+    setTimeout(() => (btn.textContent = "Copiar"), 1500);
+  });
+
+  $("download-pautas-btn").addEventListener("click", () => {
+    window.location.href = `/download/${currentJob}?tipo=pautas`;
+  });
+
+  // --- Transcrição: copiar / baixar ----------------------------------------------
 
   $("copy-btn").addEventListener("click", async () => {
     const btn = $("copy-btn");
@@ -287,6 +524,8 @@
   $("download-btn").addEventListener("click", () => {
     if (currentJob) window.location.href = `/download/${currentJob}`;
   });
+
+  // --- Seleção de arquivo ---------------------------------------------------------
 
   fileInput.addEventListener("change", () => {
     if (fileInput.files[0]) startUpload(fileInput.files[0]);

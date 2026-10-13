@@ -1,6 +1,11 @@
 flask>=3.0,<4
+python-dotenv>=1.0
+# Transcrição com identificação de falantes
+assemblyai>=0.40
+# Organização por pautas
+anthropic>=1.13
+# Transcrição local (usada quando não há ASSEMBLYAI_API_KEY)
 openai-whisper>=20250625
-# Instaladas pelo openai-whisper (listadas para deixar explícito):
 torch>=2.5
 numpy
 tqdm
