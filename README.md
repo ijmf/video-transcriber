@@ -102,6 +102,11 @@ video-transcriber/
 ├── .env.example        # modelo do .env com as chaves
 ├── .gitignore
 ├── README.md
+├── LICENSE             # licença MIT
 └── templates/
     └── index.html      # página única (HTML + CSS + JS)
 ```
+
+## Licença
+
+[MIT](LICENSE): pode usar, copiar, modificar e distribuir, inclusive comercialmente, mantendo o aviso de copyright.
