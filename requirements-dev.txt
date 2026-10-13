@@ -1,0 +1,5 @@
+# Testes (pytest + Playwright) e auditoria de dependências
+-r requirements.txt
+pytest>=8
+pytest-playwright>=0.5
+pip-audit>=2.7

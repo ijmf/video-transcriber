@@ -232,7 +232,13 @@ def load_whisper():
     # Importado só quando usado: o torch é pesado e desnecessário com a AssemblyAI.
     global _whisper, _whisper_model
     if _whisper is None:
-        _whisper = importlib.import_module("whisper")
+        try:
+            _whisper = importlib.import_module("whisper")
+        except ModuleNotFoundError:
+            raise RuntimeError(
+                "O Whisper local não está instalado. Instale com "
+                "pip install -r requirements-whisper.txt ou defina ASSEMBLYAI_API_KEY no .env."
+            )
         # "whisper.transcribe" é sobrescrito pela função de mesmo nome no
         # __init__ do pacote; importlib devolve o módulo de fato.
         module = importlib.import_module("whisper.transcribe")

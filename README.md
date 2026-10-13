@@ -1,5 +1,7 @@
 # Video Transcriber
 
+[![Testes](https://github.com/ijmf/video-transcriber/actions/workflows/testes.yml/badge.svg)](https://github.com/ijmf/video-transcriber/actions/workflows/testes.yml)
+
 Aplicação web que transcreve vídeos em português, identifica quem está falando e organiza a conversa em pautas.
 
 - Upload de vídeos **MP4, MOV, AVI e MKV** ou áudio **MP3**, de até **45 minutos**
@@ -42,6 +44,12 @@ copy .env.example .env
 
 Abra o `.env` e preencha `ASSEMBLYAI_API_KEY`. O `.env` está no `.gitignore` e não vai para o repositório.
 
+Sem a chave da AssemblyAI, instale também o Whisper local (PyTorch incluído, ~3 GB):
+
+```powershell
+pip install -r requirements-whisper.txt
+```
+
 A IA das pautas se escolhe na própria página, em **IA das pautas → Configurar** (no topo):
 
 | Opção | O que precisa |
@@ -55,7 +63,7 @@ A IA das pautas se escolhe na própria página, em **IA das pautas → Configura
 Use **Testar conexão** para listar os modelos da sua conta e **Salvar**. A escolha e a chave ficam em `ia_config.json`, ao lado do app, que também está no `.gitignore`. Chaves no `.env` (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`) valem como padrão.
 
 > O PyTorch instalado pelo pip no Windows é a versão CPU. Se você tiver GPU NVIDIA e for usar o Whisper local,
-> instale a versão CUDA antes do `requirements.txt` (veja https://pytorch.org/get-started/locally/).
+> instale a versão CUDA antes do `requirements-whisper.txt` (veja https://pytorch.org/get-started/locally/).
 
 ## Uso
 
@@ -92,19 +100,40 @@ O custo das pautas depende da IA e do modelo escolhidos em **IA das pautas**. Co
 
 Os arquivos temporários são apagados ao fim de cada job. Os resultados ficam só em memória: reiniciar o servidor os descarta.
 
+## Testes
+
+```powershell
+pip install -r requirements-dev.txt
+python -m playwright install chromium
+python -m pytest
+```
+
+- `tests/test_app.py` e `tests/test_ia.py`: rotas, validações do envio, proteção de Host/Origin, falantes, pautas, downloads e o adaptador das IAs (sem internet: as respostas das IAs são simuladas). Os testes de envio usam o ffmpeg de verdade.
+- `tests/e2e/`: a página no Chromium com Playwright — configurar a IA, enviar um áudio, renomear falantes, gerar e baixar as pautas, e gravar a reunião com microfone falso e compartilhamento de tela simulado. A IA é um servidor falso compatível com a API da OpenAI.
+
+Para usar o Chrome instalado em vez de baixar o Chromium: `python -m pytest --browser-channel chrome`. Para ver o navegador: `--headed --slowmo 300`.
+
+Os testes nunca usam o seu `ia_config.json` nem as chaves do `.env`. No GitHub, o workflow [Testes](.github/workflows/testes.yml) roda tudo a cada push e PR, e o `pip-audit` confere as dependências (também toda segunda-feira).
+
 ## Estrutura
 
 ```
 video-transcriber/
 ├── app.py              # servidor Flask, fila de transcrição e pautas
 ├── ia.py               # provedores de IA das pautas (Claude, OpenAI, Gemini, OpenRouter, Ollama)
-├── requirements.txt
+├── requirements.txt          # dependências do app
+├── requirements-whisper.txt  # Whisper local (opcional)
+├── requirements-dev.txt      # testes e auditoria
+├── pytest.ini
 ├── .env.example        # modelo do .env com as chaves
 ├── .gitignore
 ├── README.md
 ├── LICENSE             # licença MIT
-└── templates/
-    └── index.html      # página única (HTML + CSS + JS)
+├── templates/
+│   └── index.html      # página única (HTML + CSS + JS)
+├── tests/              # pytest; tests/e2e com Playwright
+└── .github/workflows/
+    └── testes.yml      # CI: testes + pip-audit
 ```
 
 ## Licença
