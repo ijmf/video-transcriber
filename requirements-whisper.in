@@ -1,0 +1,7 @@
+# Transcrição local, usada quando não há ASSEMBLYAI_API_KEY (~3 GB com o PyTorch).
+# Versões exatas em requirements-whisper.txt, compatíveis com as do app.
+-c requirements.txt
+openai-whisper>=20250625
+torch>=2.5
+numpy
+tqdm

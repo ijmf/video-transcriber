@@ -22,10 +22,14 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY requirements.txt requirements-whisper.txt ./
+# Com Whisper: o PyTorch de CPU na versão travada, sem as bibliotecas CUDA (cuda-*,
+# nvidia-*), que o requirements-whisper.txt lista para Linux e somam vários GB.
 RUN pip install -r requirements.txt \
     && if [ "$WHISPER" = "1" ]; then \
-         pip install torch --index-url https://download.pytorch.org/whl/cpu \
-         && pip install -r requirements-whisper.txt; \
+         pip install "$(grep -E '^torch==' requirements-whisper.txt | cut -d' ' -f1)" \
+             --index-url https://download.pytorch.org/whl/cpu \
+         && grep -vE '^(cuda-|nvidia-)' requirements-whisper.txt > /tmp/whisper-cpu.txt \
+         && pip install -r /tmp/whisper-cpu.txt && rm /tmp/whisper-cpu.txt; \
        fi
 
 COPY app.py ia.py historico.py ./
