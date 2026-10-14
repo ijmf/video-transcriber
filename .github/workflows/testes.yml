@@ -56,3 +56,22 @@ jobs:
         run: pip install pip-audit
       - name: Auditar ${{ matrix.arquivo }}
         run: pip-audit -r ${{ matrix.arquivo }} --progress-spinner off
+
+  docker:
+    name: Imagem Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir a imagem
+        run: docker build -t video-transcriber .
+      - name: Subir o container e conferir a página
+        run: |
+          docker run -d --name vt -p 127.0.0.1:5000:5000 video-transcriber
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:5000/ia >/dev/null && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' http://127.0.0.1:5000/)" = 403
+          docker exec vt ffprobe -version >/dev/null
+      - name: Log do container
+        if: always()
+        run: docker logs vt || true

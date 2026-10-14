@@ -1,0 +1,21 @@
+# docker compose up -d   →   http://127.0.0.1:5000
+services:
+  video-transcriber:
+    build:
+      context: .
+      args:
+        WHISPER: ${WHISPER:-0}  # WHISPER=1 docker compose up --build para o Whisper local
+    image: video-transcriber
+    ports:
+      - "127.0.0.1:5000:5000"  # só este computador acessa o app
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - dados:/dados
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Ollama rodando fora do Docker
+    restart: unless-stopped
+
+volumes:
+  dados:
