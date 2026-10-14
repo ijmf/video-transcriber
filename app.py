@@ -38,7 +38,13 @@ ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".mp3", ".webm"}
 MAX_DURATION_SECONDS = 45 * 60
 # 45 minutos de vídeo de reunião em 1080p ficam entre 1 e 2 GB; o MP3, abaixo de 100 MB.
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
-LANGUAGE = "pt"
+# Idiomas da reunião: código usado pela AssemblyAI e pelo Whisper -> nome (como aparece na
+# página e no pedido das pautas). "auto" deixa o serviço detectar.
+LANGUAGES = {
+    "pt": "Português", "en": "Inglês", "es": "Espanhol", "fr": "Francês",
+    "de": "Alemão", "it": "Italiano", "auto": "Detectar automaticamente",
+}
+DEFAULT_LANGUAGE = "pt"
 WHISPER_MODEL = "small"
 ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
 
@@ -190,7 +196,11 @@ def render_transcript(job):
 
 def transcribe_assemblyai(job_id, audio_path):
     aai.settings.api_key = ASSEMBLYAI_API_KEY
-    config = aai.TranscriptionConfig(speaker_labels=True, language_code=LANGUAGE)
+    language = jobs[job_id].get("language") or DEFAULT_LANGUAGE
+    if language == "auto":
+        config = aai.TranscriptionConfig(speaker_labels=True, language_detection=True)
+    else:
+        config = aai.TranscriptionConfig(speaker_labels=True, language_code=language)
 
     update_job(job_id, status="uploading", message="Enviando o áudio para a AssemblyAI…")
     transcript = aai.Transcriber().submit(audio_path, config)
@@ -203,6 +213,9 @@ def transcribe_assemblyai(job_id, audio_path):
 
     if transcript.status == aai.TranscriptStatus.error:
         raise RuntimeError(f"A AssemblyAI não conseguiu transcrever: {transcript.error}")
+    if language == "auto":
+        detected = (getattr(transcript, "json_response", None) or {}).get("language_code") or ""
+        update_job(job_id, detected_language=detected.split("_")[0].lower())
 
     return [
         {
@@ -275,15 +288,18 @@ def transcribe_whisper(job_id, audio_path):
         )
     whisper, model = load_whisper()
 
+    language = jobs[job_id].get("language") or DEFAULT_LANGUAGE
     update_job(job_id, status="transcribing", message="Transcrevendo…", progress=0)
     _progress_callback = lambda p: update_job(job_id, progress=round(p * 100, 1))
     try:
         result = whisper.transcribe(
-            model, audio_path, language=LANGUAGE, verbose=False,
+            model, audio_path, language=None if language == "auto" else language, verbose=False,
             fp16=model.device.type == "cuda",
         )
     finally:
         _progress_callback = None
+    if language == "auto":
+        update_job(job_id, detected_language=result.get("language") or "")
 
     return [
         {
@@ -376,7 +392,7 @@ PAUTAS_SCHEMA = {
     "additionalProperties": False,
 }
 
-PAUTAS_SYSTEM = """Você organiza transcrições de reuniões e conversas em pautas, em português do Brasil.
+PAUTAS_SYSTEM = """Você organiza transcrições de reuniões e conversas em pautas.
 
 Cada linha da transcrição tem o formato "[MM:SS] Falante: texto". Extraia:
 - objetivo: para que a conversa aconteceu;
@@ -384,11 +400,34 @@ Cada linha da transcrição tem o formato "[MM:SS] Falante: texto". Extraia:
 - participantes: quem falou e, se der para perceber, o papel de cada um. Quando o rótulo for genérico ("Falante A"), sugira o nome real só se o diálogo deixar isso claro (alguém chama a pessoa pelo nome, ela se apresenta etc.);
 - problemas levantados, decisões tomadas, soluções propostas, pendências (com responsável e prazo, quando ditos) e próximos passos.
 
-Use só o que foi dito na transcrição; não invente responsáveis, prazos nem decisões. Se uma seção não tiver conteúdo, deixe a lista vazia (ou a string vazia). Escreva cada item como uma frase curta e objetiva. Em "timestamp", use o momento da linha onde o assunto aparece."""
+Use só o que foi dito na transcrição; não invente responsáveis, prazos nem decisões. Se uma seção não tiver conteúdo, deixe a lista vazia (ou a string vazia). Escreva cada item como uma frase curta e objetiva. Em "timestamp", use o momento da linha onde o assunto aparece.
+
+{idioma}"""
+
+# Em que língua a IA escreve as pautas, conforme o idioma da reunião.
+PAUTAS_IDIOMA = {
+    "pt": "Escreva todo o conteúdo em português do Brasil.",
+    "en": "A reunião foi em inglês: escreva todo o conteúdo em inglês.",
+    "es": "A reunião foi em espanhol: escreva todo o conteúdo em espanhol.",
+    "fr": "A reunião foi em francês: escreva todo o conteúdo em francês.",
+    "de": "A reunião foi em alemão: escreva todo o conteúdo em alemão.",
+    "it": "A reunião foi em italiano: escreva todo o conteúdo em italiano.",
+}
+PAUTAS_IDIOMA_DA_TRANSCRICAO = "Escreva todo o conteúdo no mesmo idioma em que a transcrição está."
 
 
-def generate_pautas(transcript_text):
-    return ia.generate(transcript_text, PAUTAS_SYSTEM, PAUTAS_SCHEMA)
+def job_language(job):
+    """Idioma efetivo da reunião: o escolhido ou, no automático, o detectado ("" se não deu)."""
+    language = job.get("language") or DEFAULT_LANGUAGE
+    return job.get("detected_language", "") if language == "auto" else language
+
+
+def pautas_system(language):
+    return PAUTAS_SYSTEM.format(idioma=PAUTAS_IDIOMA.get(language, PAUTAS_IDIOMA_DA_TRANSCRICAO))
+
+
+def generate_pautas(transcript_text, language=DEFAULT_LANGUAGE):
+    return ia.generate(transcript_text, pautas_system(language), PAUTAS_SCHEMA)
 
 
 def pautas_error(exc):
@@ -415,8 +454,9 @@ def run_pautas(job_id):
     (None, (mensagem, código))."""
     with jobs_lock:
         transcript_text = render_transcript(jobs[job_id])
+        language = job_language(jobs[job_id])
     try:
-        result = generate_pautas(transcript_text)
+        result = generate_pautas(transcript_text, language)
     except Exception as exc:  # noqa: BLE001 — qualquer falha vira mensagem na tela
         erro = pautas_error(exc) or (f"Erro inesperado ao gerar as pautas: {exc}", 500)
         update_job(job_id, pautas_status="erro", pautas_error=erro[0])
@@ -561,6 +601,8 @@ def index():
         max_minutes=MAX_DURATION_SECONDS // 60,
         max_bytes=app.config["MAX_CONTENT_LENGTH"],
         max_label=upload_limit_label(),
+        languages=LANGUAGES,
+        default_language=DEFAULT_LANGUAGE,
         extensions=", ".join(sorted(e.lstrip(".").upper() for e in ALLOWED_EXTENSIONS)),
         accept=",".join(sorted(ALLOWED_EXTENSIONS)),
         engine="AssemblyAI (com identificação de falantes)" if TRANSCRIBER == "assemblyai"
@@ -580,6 +622,10 @@ def upload():
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         return jsonify(error=f"Formato não suportado: {ext or '(sem extensão)'}."), 400
+
+    language = request.form.get("idioma") or DEFAULT_LANGUAGE
+    if language not in LANGUAGES:
+        return jsonify(error=f"Idioma não suportado: {language}."), 400
 
     workdir = tempfile.mkdtemp(prefix="video-transcriber-")
     video_path = os.path.join(workdir, "video" + ext)
@@ -608,6 +654,8 @@ def upload():
             "duration": duration,
             "engine": TRANSCRIBER,
             "created": time.time(),
+            "language": language,
+            "detected_language": "",
             "workdir": workdir,
             "video_path": video_path,
             "segments": [],
@@ -640,6 +688,7 @@ def status(job_id):
             payload["pautas"] = job["pautas"]
             payload["pautas_status"] = job.get("pautas_status")
             payload["pautas_error"] = job.get("pautas_error", "")
+            payload["language"] = job_language(job)
     return jsonify(payload)
 
 

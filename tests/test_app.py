@@ -275,7 +275,7 @@ def test_limite_de_upload_e_2_gb(client):
     assert app_module.app.config["MAX_CONTENT_LENGTH"] == 2 * 1024 ** 3
     assert app_module.upload_limit_label() == "2 GB"
     html = client.get("/").get_data(as_text=True)
-    assert "com até 45 minutos e 2 GB." in html
+    assert "com até 45 minutos e 2&nbsp;GB." in html
     assert "const MAX_BYTES = 2147483648, MAX_LABEL = \"2 GB\";" in html
 
 

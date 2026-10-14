@@ -2,13 +2,14 @@
 
 [![Testes](https://github.com/ijmf/video-transcriber/actions/workflows/testes.yml/badge.svg)](https://github.com/ijmf/video-transcriber/actions/workflows/testes.yml)
 
-Aplicação web que transcreve vídeos em português, identifica quem está falando e organiza a conversa em pautas.
+Aplicação web que transcreve reuniões em português (ou em inglês, espanhol, francês, alemão e italiano), identifica quem está falando e organiza a conversa em pautas.
 
 ![Enviando o áudio de uma reunião fictícia, gerando as pautas e começando uma gravação](docs/demo.gif)
 
 - Upload de vídeos **MP4, MOV, AVI e MKV** ou áudio **MP3**, de até **45 minutos** e **2 GB**
 - **Gravar a reunião** direto na página: microfone + áudio do computador (Chrome ou Edge)
 - Extração do áudio com **ffmpeg**
+- **Idioma da reunião** à escolha (português, inglês, espanhol, francês, alemão, italiano ou detecção automática); as pautas saem no mesmo idioma
 - Transcrição com **identificação de falantes** ([AssemblyAI](https://www.assemblyai.com/)), no formato `[00:00] João: texto`
 - Renomear os falantes ("Falante A" → "João"); a IA sugere nomes quando eles aparecem na conversa
 - **Organização por pautas** com a IA que você preferir (Claude, ChatGPT, Gemini, OpenRouter ou Ollama local): objetivo, contexto, participantes, problemas levantados, decisões, soluções propostas, pendências (responsável e prazo) e próximos passos, cada item com o timestamp onde foi falado
@@ -93,7 +94,7 @@ Abra http://127.0.0.1:5000. A porta fica publicada só em `127.0.0.1`, então o 
 python app.py
 ```
 
-Abra http://127.0.0.1:5000 e envie um vídeo ou áudio, ou clique em **Gravar reunião**. Para gravar, o navegador pede o microfone e depois o compartilhamento de tela: escolha a tela ou a aba da reunião e marque **Compartilhar áudio** (é assim que a voz da outra pessoa entra). Ao clicar em **Parar e transcrever**, a gravação segue direto para a transcrição. Avise os participantes de que a reunião está sendo gravada.
+Abra http://127.0.0.1:5000, escolha o **Idioma da reunião** (o padrão é português e a página lembra a última escolha) e envie um vídeo ou áudio, ou clique em **Gravar reunião**. Para gravar, o navegador pede o microfone e depois o compartilhamento de tela: escolha a tela ou a aba da reunião e marque **Compartilhar áudio** (é assim que a voz da outra pessoa entra). Ao clicar em **Parar e transcrever**, a gravação segue direto para a transcrição. Avise os participantes de que a reunião está sendo gravada.
 
 Quando a transcrição terminar, tudo aparece na mesma página:
 
