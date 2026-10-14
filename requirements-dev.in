@@ -1,0 +1,8 @@
+# Testes (pytest + Playwright), auditoria de dependências e o uv, que gera os
+# arquivos .txt travados. Versões exatas em requirements-dev.txt.
+-r requirements.in
+-c requirements.txt
+pytest>=8
+pytest-playwright>=0.5
+pip-audit>=2.7
+uv

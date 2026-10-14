@@ -139,6 +139,20 @@ Para usar o Chrome instalado em vez de baixar o Chromium: `python -m pytest --br
 
 Os testes nunca usam o seu `ia_config.json`, o seu `historico.db` nem as chaves do `.env`. No GitHub, o workflow [Testes](.github/workflows/testes.yml) roda tudo a cada push e PR, e o `pip-audit` confere as dependências (também toda segunda-feira).
 
+### Atualizar as dependências
+
+As versões ficam travadas: `requirements.txt`, `requirements-whisper.txt` e `requirements-dev.txt` têm a versão exata de cada pacote (para Windows, Linux e macOS), e são eles que o `pip`, o CI e o Docker instalam. As dependências diretas, com as versões mínimas, ficam nos arquivos `.in`. Para atualizar, edite o `.in` se precisar e gere de novo os `.txt` com o [uv](https://docs.astral.sh/uv/) (já vem no `requirements-dev.txt`):
+
+```powershell
+python -m uv pip compile requirements.in --universal --python-version 3.13 -o requirements.txt --upgrade
+python -m uv pip compile requirements-whisper.in --universal --python-version 3.13 -o requirements-whisper.txt --upgrade
+python -m uv pip compile requirements-dev.in --universal --python-version 3.13 -o requirements-dev.txt --upgrade
+pip install -r requirements-dev.txt -r requirements-whisper.txt
+python -m pytest
+```
+
+Gere na ordem acima: os outros dois usam as versões do `requirements.txt`. O `pip-audit` do CI avisa toda segunda-feira se alguma versão travada tiver vulnerabilidade conhecida.
+
 ## Estrutura
 
 ```
@@ -146,9 +160,12 @@ video-transcriber/
 ├── app.py              # servidor Flask, fila de transcrição e pautas
 ├── ia.py               # provedores de IA das pautas (Claude, OpenAI, Gemini, OpenRouter, Ollama)
 ├── historico.py        # histórico das transcrições em SQLite (historico.db)
-├── requirements.txt          # dependências do app
-├── requirements-whisper.txt  # Whisper local (opcional)
-├── requirements-dev.txt      # testes e auditoria
+├── requirements.in           # dependências do app (versões mínimas)
+├── requirements.txt          # versões travadas, geradas do .in
+├── requirements-whisper.in   # Whisper local (opcional)
+├── requirements-whisper.txt
+├── requirements-dev.in       # testes, auditoria e uv
+├── requirements-dev.txt
 ├── pytest.ini
 ├── Dockerfile          # Python 3.13 + ffmpeg (WHISPER=1 inclui o Whisper)
 ├── compose.yaml        # docker compose up -d --build
