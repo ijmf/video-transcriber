@@ -4,7 +4,7 @@
 
 Aplicação web que transcreve vídeos em português, identifica quem está falando e organiza a conversa em pautas.
 
-<!-- GIF da gravação e das pautas: docs/demo.gif (a gravar) -->
+![Enviando o áudio de uma reunião fictícia, gerando as pautas e começando uma gravação](docs/demo.gif)
 
 - Upload de vídeos **MP4, MOV, AVI e MKV** ou áudio **MP3**, de até **45 minutos**
 - **Gravar a reunião** direto na página: microfone + áudio do computador (Chrome ou Edge)
