@@ -7,6 +7,7 @@ env
 .env
 ia_config.json
 ia_config.json.tmp
+historico.db*
 __pycache__
 *.py[cod]
 .pytest_cache

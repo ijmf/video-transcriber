@@ -15,6 +15,9 @@ env/
 .env
 ia_config.json
 ia_config.json.tmp
+# Histórico das transcrições (conteúdo das reuniões)
+historico.db
+historico.db-journal
 
 # Mídia e saídas
 *.mp4

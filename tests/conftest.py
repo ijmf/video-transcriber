@@ -2,8 +2,8 @@
 
 As variáveis abaixo são definidas antes de importar o app: o load_dotenv() não
 sobrescreve o que já existe no ambiente, então as chaves do .env de quem roda os
-testes nunca entram em jogo. O ia_config.json real também fica intocado: cada
-teste usa um arquivo próprio numa pasta temporária.
+testes nunca entram em jogo. O ia_config.json e o historico.db reais também
+ficam intocados: cada teste usa arquivos próprios numa pasta temporária.
 """
 
 import os
@@ -18,6 +18,7 @@ for _var in ("ASSEMBLYAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app as app_module  # noqa: E402
+import historico  # noqa: E402
 import ia  # noqa: E402
 from dados import SEGMENTOS, gerar_audio  # noqa: E402
 
@@ -26,6 +27,12 @@ from dados import SEGMENTOS, gerar_audio  # noqa: E402
 def ia_config_isolado(tmp_path, monkeypatch):
     monkeypatch.setattr(ia, "CONFIG_PATH", str(tmp_path / "ia_config.json"))
     return tmp_path / "ia_config.json"
+
+
+@pytest.fixture(autouse=True)
+def historico_isolado(tmp_path, monkeypatch):
+    monkeypatch.setattr(historico, "DB_PATH", str(tmp_path / "historico.db"))
+    return tmp_path / "historico.db"
 
 
 @pytest.fixture(autouse=True)
