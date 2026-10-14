@@ -192,9 +192,30 @@ def test_arquivo_grande_demais_avisa_antes_de_enviar(page: Page, app_url, audio_
     envios = []
     page.on("request", lambda r: envios.append(r.url) if r.url.endswith("/upload") else None)
     page.goto(app_url)
-    expect(page.locator("#fmt")).to_contain_text("com até 45 minutos e 1000 bytes.")
+    expect(page.locator("#fmt")).to_contain_text("com até 45 minutos e 1000 bytes.")
     page.set_input_files("#video", str(audio_mp3))
     expect(page.locator("#send-status")).to_contain_text("o limite é 1000 bytes. Envie só o áudio (MP3)")
     expect(page.locator("#work")).to_be_hidden()
     expect(page.locator("#drop")).to_be_visible()
     assert not envios
+
+
+def test_reuniao_em_ingles_gera_pautas_em_ingles(page: Page, app_url, ia_falsa,
+                                                audio_mp3, transcricao_falsa):
+    page.goto(app_url)
+    configurar_ia_falsa(page, ia_falsa)
+    expect(page.locator("#idioma")).to_have_value("pt")
+    page.select_option("#idioma", "en")
+
+    page.set_input_files("#video", str(audio_mp3))
+    expect(page.locator("#res-file")).to_have_text("reuniao.mp3 · Inglês", timeout=ESPERA)
+    expect(page.locator("#pautas-out .title")).to_have_text("Lançamento do produto", timeout=ESPERA)
+    sistema = ia_falsa.pedidos[-1]["messages"][0]["content"]
+    assert "A reunião foi em inglês: escreva todo o conteúdo em inglês." in sistema
+    expect(page.locator(".hist-item").first).to_contain_text("Inglês")
+
+    # O seletor some durante o trabalho e volta com a última escolha, mesmo após recarregar.
+    expect(page.locator("#idioma")).to_be_hidden()
+    page.reload()
+    expect(page.locator("#idioma")).to_be_visible()
+    expect(page.locator("#idioma")).to_have_value("en")

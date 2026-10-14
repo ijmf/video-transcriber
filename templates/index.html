@@ -75,6 +75,15 @@
       transition: background-color 180ms ease, border-color 180ms ease;
     }
     .drop.over { background: var(--ink); color: var(--bg); border-color: var(--bg); }
+    .lang { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; margin-top: 32px; }
+    .lang label { font-weight: 600; }
+    .lang select {
+      min-height: 46px; padding: 0 12px; font: inherit; color: var(--ink); background: var(--surface);
+      border: 2px solid var(--muted); border-radius: 0; /* taste-skill-ignore: campo de formulário */
+    }
+    .lang select:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+    .lang + .drop { margin-top: 16px; }
+    .lang:has(+ .drop[hidden]) { display: none; }
     .drop.busy { pointer-events: none; }
     .drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
     .drop:focus-within { outline: 3px solid var(--ink); outline-offset: 4px; }
@@ -279,11 +288,19 @@
 
   <section class="send" id="enviar" aria-labelledby="send-h">
     <h2 class="display" id="send-h">Solte a gravação<br>aqui.</h2>
+    <div class="lang">
+      <label for="idioma">Idioma da reunião</label>
+      <select id="idioma">
+        {%- for code, name in languages.items() %}
+        <option value="{{ code }}"{% if code == default_language %} selected{% endif %}>{{ name }}</option>
+        {%- endfor %}
+      </select>
+    </div>
     <label class="drop" id="drop">
       <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv,.mp3" aria-describedby="fmt">
       <p class="what" id="drop-what">Arraste o vídeo ou o áudio da reunião para cá</p>
       <span class="button" id="drop-btn">Escolher arquivo</span>
-      <p class="fmt" id="fmt">Vídeo MP4, MOV, AVI ou MKV, ou áudio MP3, com até 45 minutos e {{ max_label }}.</p>
+      <p class="fmt" id="fmt">Vídeo MP4, MOV, AVI ou MKV, ou áudio MP3, com até 45 minutos e {{ max_label.replace(" ", "&nbsp;") | safe }}.</p>
     </label>
     <div class="rec" id="rec" aria-labelledby="rec-h">
       <div class="rec-idle" id="rec-idle">
@@ -381,6 +398,15 @@
   // Enviar: o processo inteiro acontece aqui — envio, progresso, falantes, pautas e transcrição.
   const ALLOWED = [".mp4", ".mov", ".avi", ".mkv", ".mp3", ".webm"];
   const MAX_BYTES = {{ max_bytes }}, MAX_LABEL = "{{ max_label }}";
+  const LANGUAGES = {{ languages | tojson }};
+  // Lembra o último idioma escolhido neste navegador (só uma conveniência).
+  try {
+    const saved = localStorage.getItem("idioma");
+    if (saved && LANGUAGES[saved]) document.getElementById("idioma").value = saved;
+  } catch (_) {}
+  document.getElementById("idioma").addEventListener("change", (e) => {
+    try { localStorage.setItem("idioma", e.target.value); } catch (_) {}
+  });
   const STEP_ORDER = ["upload", "extracting", "prepare", "transcribing"];
   const STATUS_STEP = { queued: "upload", extracting: "extracting", uploading: "prepare", loading: "prepare", transcribing: "transcribing" };
   const OFFLINE = "Não foi possível falar com o app. Confira se o python app.py ainda está rodando e tente de novo.";
@@ -459,6 +485,7 @@
     work.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
     const form = new FormData();
     form.append("video", file);
+    form.append("idioma", $("idioma").value);
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/upload");
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) setProgress("Enviando o arquivo…", (e.loaded / e.total) * 100, "upload"); };
@@ -496,7 +523,8 @@
     segments = data.segments; speakers = data.speakers; fullText = data.text;
     setProgress(data.message, 100, "done");
     run.hidden = true; results.hidden = false;
-    $("res-file").textContent = $("run-file").textContent;
+    $("res-file").textContent = $("run-file").textContent +
+      (data.language && data.language !== "pt" && LANGUAGES[data.language] ? ` · ${LANGUAGES[data.language]}` : "");
     $("spk-pane").hidden = !Object.keys(speakers).length;
     $("pautas-pane").hidden = !segments.length;
     renderSpeakers();
@@ -689,7 +717,9 @@
       del.setAttribute("aria-label", `Apagar ${t.filename}`);
       open.setAttribute("aria-label", `Abrir ${t.filename}`);
       del.addEventListener("click", () => deleteFromHistory(t.id, t.filename));
-      const info = [fmtWhen(t.criado_em), fmtClock(t.duration), t.tem_pautas ? "com pautas" : "sem pautas"].join(" · ");
+      const info = [fmtWhen(t.criado_em), fmtClock(t.duration),
+        t.idioma && t.idioma !== "pt" ? LANGUAGES[t.idioma] || t.idioma : "",
+        t.tem_pautas ? "com pautas" : "sem pautas"].filter(Boolean).join(" · ");
       return el("li", { className: "hist-item" + (t.id === job ? " current" : "") },
         el("div", {}, el("b", { textContent: t.titulo || t.filename }),
           el("small", { textContent: t.titulo ? `${t.filename} · ${info}` : info })),

@@ -76,7 +76,8 @@ def test_salvar_carregar_e_listar(historico_isolado):
     lista = historico.listar()
     assert [t["id"] for t in lista] == ["novo", "velho"]
     assert lista[0] == {"id": "novo", "criado_em": 2000.0, "filename": "outra.webm",
-                        "duration": 62.0, "tem_pautas": True, "titulo": "Lançamento"}
+                        "duration": 62.0, "tem_pautas": True, "titulo": "Lançamento",
+                        "idioma": "pt"}
     assert lista[1]["tem_pautas"] is False and lista[1]["titulo"] == ""
 
 
