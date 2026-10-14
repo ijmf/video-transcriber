@@ -219,3 +219,13 @@ def test_reuniao_em_ingles_gera_pautas_em_ingles(page: Page, app_url, ia_falsa,
     page.reload()
     expect(page.locator("#idioma")).to_be_visible()
     expect(page.locator("#idioma")).to_have_value("en")
+
+
+def test_pagina_carrega_sem_erros_de_script(page: Page, app_url):
+    erros = []
+    page.on("pageerror", lambda e: erros.append(str(e)))
+    page.on("console", lambda m: erros.append(m.text) if m.type == "error" else None)
+    page.goto(app_url)
+    expect(page.locator("#ia-current")).to_have_text("não configurada")
+    expect(page.locator(".send h2")).to_have_css("font-family", re.compile("Anton"))  # estilo.css carregou
+    assert not erros

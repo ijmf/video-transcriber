@@ -6,9 +6,11 @@ import types
 
 import pytest
 
-import app as app_module
 import historico
 import ia
+import pautas
+import trabalhos
+import transcricao
 from dados import SEGMENTOS
 
 PAUTAS = ia._normalize({"titulo": "Launch"})
@@ -51,7 +53,7 @@ def ia_captura(monkeypatch):
 def test_sem_idioma_usa_portugues(client, audio_mp3, transcricao_falsa):
     resp = enviar(client, audio_mp3)
     job_id = resp.get_json()["job_id"]
-    assert app_module.jobs[job_id]["language"] == "pt"
+    assert trabalhos.jobs[job_id]["language"] == "pt"
     assert esperar_done(client, job_id)["language"] == "pt"
 
 
@@ -64,7 +66,7 @@ def test_idioma_desconhecido_e_recusado(client, audio_mp3):
     resp = enviar(client, audio_mp3, "klingon")
     assert resp.status_code == 400
     assert resp.get_json()["error"] == "Idioma não suportado: klingon."
-    assert not app_module.jobs
+    assert not trabalhos.jobs
 
 
 def test_pagina_lista_os_idiomas(client):
@@ -98,26 +100,27 @@ def aai_falsa(monkeypatch):
         Transcript=types.SimpleNamespace(get_by_id=lambda _id: transcript),
         TranscriptStatus=types.SimpleNamespace(queued="queued", processing="processing", error="error"),
     )
-    monkeypatch.setattr(app_module, "aai", falsa)
+    monkeypatch.setattr(transcricao, "aai", falsa)
     return capturado
 
 
-def job_em_memoria(language):
-    with app_module.jobs_lock:
-        app_module.jobs["j"] = {"status": "extracting", "language": language, "detected_language": ""}
-    return "j"
+def avisos():
+    lista = []
+    return lista, lambda **campos: lista.append(campos)
 
 
 def test_assemblyai_recebe_o_idioma(aai_falsa):
-    app_module.transcribe_assemblyai(job_em_memoria("es"), "audio.mp3")
+    lista, avisar = avisos()
+    _, detectado = transcricao.transcribe_assemblyai("audio.mp3", "es", avisar)
     assert aai_falsa == {"speaker_labels": True, "language_code": "es"}
-    assert app_module.jobs["j"]["detected_language"] == ""
+    assert detectado == ""
+    assert [a["status"] for a in lista] == ["uploading", "transcribing"]
 
 
 def test_assemblyai_detecta_o_idioma(aai_falsa):
-    segmentos = app_module.transcribe_assemblyai(job_em_memoria("auto"), "audio.mp3")
+    segmentos, detectado = transcricao.transcribe_assemblyai("audio.mp3", "auto", avisos()[1])
     assert aai_falsa == {"speaker_labels": True, "language_detection": True}
-    assert app_module.jobs["j"]["detected_language"] == "en"  # "en_us" vira "en"
+    assert detectado == "en"  # "en_us" vira "en"
     assert segmentos[0]["text"] == "Hello team."
 
 
@@ -130,12 +133,12 @@ def test_whisper_recebe_ou_detecta_o_idioma(monkeypatch, escolhido, enviado, det
         return {"language": "fr", "segments": [{"start": 0, "text": " Bonjour "}]}
 
     modelo = types.SimpleNamespace(device=types.SimpleNamespace(type="cpu"))
-    monkeypatch.setattr(app_module, "load_whisper",
+    monkeypatch.setattr(transcricao, "load_whisper",
                         lambda: (types.SimpleNamespace(transcribe=transcribe), modelo))
-    monkeypatch.setattr(app_module, "_whisper_model", modelo)
-    segmentos = app_module.transcribe_whisper(job_em_memoria(escolhido), "audio.wav")
+    monkeypatch.setattr(transcricao, "_whisper_model", modelo)
+    segmentos, detectado_agora = transcricao.transcribe_whisper("audio.wav", escolhido, avisos()[1])
     assert recebido["language"] == enviado
-    assert app_module.jobs["j"]["detected_language"] == detectado
+    assert detectado_agora == detectado
     assert segmentos[0]["text"] == "Bonjour"
 
 
@@ -150,18 +153,18 @@ def test_whisper_recebe_ou_detecta_o_idioma(monkeypatch, escolhido, enviado, det
     ("ja", "no mesmo idioma em que a transcrição está."),
 ])
 def test_pedido_das_pautas_no_idioma(idioma, trecho):
-    sistema = app_module.pautas_system(idioma)
+    sistema = pautas.pautas_system(idioma)
     assert sistema.startswith("Você organiza transcrições de reuniões e conversas em pautas.")
     assert sistema.rstrip().endswith(trecho)
 
 
 def test_pautas_seguem_o_idioma_detectado(client, audio_mp3, monkeypatch, ia_captura):
-    def falsa(job_id, audio_path):
-        app_module.update_job(job_id, detected_language="es")
-        return [dict(s) for s in SEGMENTOS]
+    def falsa(audio_path, language, avisar):
+        assert language == "auto"
+        return [dict(s) for s in SEGMENTOS], "es"
 
-    monkeypatch.setattr(app_module, "TRANSCRIBER", "assemblyai")
-    monkeypatch.setattr(app_module, "transcribe_assemblyai", falsa)
+    monkeypatch.setattr(transcricao, "TRANSCRIBER", "assemblyai")
+    monkeypatch.setattr(transcricao, "transcribe_assemblyai", falsa)
     job_id = enviar(client, audio_mp3, "auto").get_json()["job_id"]
     assert esperar_done(client, job_id)["language"] == "es"
     assert client.post(f"/pautas/{job_id}").status_code == 200
@@ -170,10 +173,10 @@ def test_pautas_seguem_o_idioma_detectado(client, audio_mp3, monkeypatch, ia_cap
 
 def test_idioma_sobrevive_a_reiniciar(client, job_pronto, ia_captura):
     job_id = job_pronto()
-    app_module.jobs[job_id]["language"] = "it"
-    historico.salvar(job_id, app_module.jobs[job_id])
-    with app_module.jobs_lock:
-        app_module.jobs.clear()
+    trabalhos.jobs[job_id]["language"] = "it"
+    historico.salvar(job_id, trabalhos.jobs[job_id])
+    with trabalhos.jobs_lock:
+        trabalhos.jobs.clear()
 
     assert client.get(f"/status/{job_id}").get_json()["language"] == "it"
     client.post(f"/pautas/{job_id}")

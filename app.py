@@ -1,29 +1,26 @@
-"""Video Transcriber — transcrição de vídeos com identificação de falantes e
+"""Video Transcriber — transcrição de reuniões com identificação de falantes e
 organização por pautas.
 
 Fluxo: upload do vídeo -> ffprobe valida a duração -> ffmpeg extrai o áudio ->
 transcrição (AssemblyAI com identificação de falantes, ou Whisper local se não
 houver chave da AssemblyAI) -> a página consulta o progresso em
-/status/<job_id> -> o usuário renomeia os falantes -> o Claude organiza a
-transcrição em pautas (objetivo, contexto, problemas, decisões...).
+/status/<job_id> -> a IA escolhida organiza a transcrição em pautas (objetivo,
+contexto, problemas, decisões...) -> tudo fica no histórico.
+
+Este arquivo tem só o servidor web. O resto está em:
+  midia.py        ffmpeg: duração e extração do áudio
+  transcricao.py  AssemblyAI e Whisper, idiomas
+  pautas.py       pedido à IA e Markdown das pautas
+  ia.py           provedores de IA (Claude, OpenAI, Gemini, OpenRouter, Ollama)
+  trabalhos.py    fila, estado dos jobs e pautas automáticas
+  historico.py    histórico em SQLite
 """
 
-import glob
-import importlib
-import json
 import os
-import queue
-import re
 import shutil
-import subprocess
 import tempfile
-import threading
-import time
-import types
 import uuid
 
-import anthropic
-import assemblyai as aai
 from dotenv import load_dotenv
 from flask import Flask, Response, abort, jsonify, render_template, request
 from werkzeug.utils import secure_filename
@@ -32,32 +29,20 @@ load_dotenv()
 
 import historico  # noqa: E402
 import ia  # noqa: E402 — lê o .env ao ser importado
+import midia  # noqa: E402
+import pautas as pautas_mod  # noqa: E402
+import trabalhos  # noqa: E402
+import transcricao  # noqa: E402
+from trabalhos import get_done_job, get_job, jobs, jobs_lock, render_transcript  # noqa: E402
 
-# .webm é o formato das gravações feitas pelo navegador na landing.
+# .webm é o formato das gravações feitas pelo navegador.
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".mp3", ".webm"}
 MAX_DURATION_SECONDS = 45 * 60
 # 45 minutos de vídeo de reunião em 1080p ficam entre 1 e 2 GB; o MP3, abaixo de 100 MB.
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
-# Idiomas da reunião: código usado pela AssemblyAI e pelo Whisper -> nome (como aparece na
-# página e no pedido das pautas). "auto" deixa o serviço detectar.
-LANGUAGES = {
-    "pt": "Português", "en": "Inglês", "es": "Espanhol", "fr": "Francês",
-    "de": "Alemão", "it": "Italiano", "auto": "Detectar automaticamente",
-}
-DEFAULT_LANGUAGE = "pt"
-WHISPER_MODEL = "small"
-ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
-
-# Com chave da AssemblyAI a transcrição identifica os falantes; sem ela, cai
-# no Whisper local (sem falantes), como na primeira versão do projeto.
-TRANSCRIBER = "assemblyai" if ASSEMBLYAI_API_KEY else "whisper"
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
-
-jobs = {}
-jobs_lock = threading.Lock()
-job_queue = queue.Queue()
 
 # O app só atende pelo próprio computador. Recusar qualquer outro Host barra o
 # DNS rebinding: um site que aponte o domínio dele para 127.0.0.1 não passa daqui.
@@ -71,7 +56,16 @@ def only_local_host():
         abort(403)
 
 
-# --- Utilitários ---------------------------------------------------------------
+def require_same_origin(json_body=True):
+    """Só a própria página pode mudar a configuração ou apagar o histórico: outro site
+    aberto no navegador não consegue trocar a chave nem apontar as pautas para um
+    servidor dele."""
+    origin = request.headers.get("Origin")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        abort(403)
+    if json_body and not request.is_json:
+        abort(415)
+
 
 def upload_limit_label():
     """O limite de upload para mostrar na tela, ex.: "2 GB"."""
@@ -79,520 +73,7 @@ def upload_limit_label():
     return f"{gb:g} GB".replace(".", ",") if gb >= 0.1 else f"{app.config['MAX_CONTENT_LENGTH']} bytes"
 
 
-def format_timestamp(seconds):
-    seconds = int(seconds)
-    hours, rest = divmod(seconds, 3600)
-    minutes, secs = divmod(rest, 60)
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
-
-
-def ensure_ffmpeg_on_path():
-    """Se o ffmpeg não estiver no PATH, procura em FFMPEG_DIR ou na instalação
-    do winget (Gyan.FFmpeg) e adiciona a pasta ao PATH deste processo — o
-    próprio Whisper chama "ffmpeg" pelo nome."""
-    if shutil.which("ffmpeg") and shutil.which("ffprobe"):
-        return
-    candidates = []
-    if os.environ.get("FFMPEG_DIR"):
-        candidates.append(os.environ["FFMPEG_DIR"])
-    winget_packages = os.path.join(
-        os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Packages"
-    )
-    candidates += sorted(
-        glob.glob(os.path.join(winget_packages, "*FFmpeg*", "*", "bin")), reverse=True
-    )
-    for folder in candidates:
-        if os.path.isfile(os.path.join(folder, "ffmpeg.exe")) or os.path.isfile(
-            os.path.join(folder, "ffmpeg")
-        ):
-            os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
-            return
-
-
-def ffmpeg_available():
-    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
-
-
-ensure_ffmpeg_on_path()
-
-
-def get_duration(path):
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "json", path,
-        ],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        raise ValueError("Não foi possível ler o arquivo. Ele pode estar corrompido.")
-    try:
-        return float(json.loads(result.stdout)["format"]["duration"])
-    except (KeyError, ValueError, TypeError):
-        # Gravações do navegador (MediaRecorder) não trazem a duração no cabeçalho:
-        # lê o áudio inteiro e usa o último tempo que o ffmpeg informa.
-        return decoded_duration(path)
-
-
-def decoded_duration(path):
-    result = subprocess.run(
-        ["ffmpeg", "-nostdin", "-i", path, "-vn", "-f", "null", "-"],
-        capture_output=True, text=True, check=False,
-    )
-    times = re.findall(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr)
-    if result.returncode != 0 or not times:
-        raise ValueError("Não foi possível determinar a duração do arquivo.")
-    h, m, sec = times[-1]
-    return int(h) * 3600 + int(m) * 60 + float(sec)
-
-
-def extract_audio(video_path, audio_path):
-    # WAV para o Whisper local; MP3 mono 64 kbps para a AssemblyAI (upload ~4x menor).
-    if audio_path.endswith(".mp3"):
-        codec = ["-c:a", "libmp3lame", "-b:a", "64k"]
-    else:
-        codec = ["-c:a", "pcm_s16le"]
-    result = subprocess.run(
-        ["ffmpeg", "-nostdin", "-y", "-i", video_path, "-vn", "-ac", "1", "-ar", "16000",
-         *codec, audio_path],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        tail = "\n".join(result.stderr.strip().splitlines()[-5:])
-        raise RuntimeError(f"Falha ao extrair o áudio com ffmpeg:\n{tail}")
-
-
-def guardar_historico(job_id, job):
-    """Grava no histórico sem derrubar o job se o disco falhar: o resultado continua na tela."""
-    try:
-        historico.salvar(job_id, job)
-    except Exception:  # noqa: BLE001
-        app.logger.exception("Não foi possível gravar a transcrição %s no histórico", job_id)
-
-
-def update_job(job_id, **fields):
-    with jobs_lock:
-        jobs[job_id].update(fields)
-
-
-def speaker_name(job, code):
-    return job["speakers"].get(code) or f"Falante {code}"
-
-
-def render_transcript(job):
-    lines = []
-    for seg in job["segments"]:
-        prefix = f"[{seg['timestamp']}] "
-        if seg["speaker"]:
-            prefix += f"{speaker_name(job, seg['speaker'])}: "
-        lines.append(prefix + seg["text"])
-    return "\n".join(lines)
-
-
-# --- Transcrição: AssemblyAI (com falantes) --------------------------------------
-
-def transcribe_assemblyai(job_id, audio_path):
-    aai.settings.api_key = ASSEMBLYAI_API_KEY
-    language = jobs[job_id].get("language") or DEFAULT_LANGUAGE
-    if language == "auto":
-        config = aai.TranscriptionConfig(speaker_labels=True, language_detection=True)
-    else:
-        config = aai.TranscriptionConfig(speaker_labels=True, language_code=language)
-
-    update_job(job_id, status="uploading", message="Enviando o áudio para a AssemblyAI…")
-    transcript = aai.Transcriber().submit(audio_path, config)
-
-    update_job(job_id, status="transcribing",
-               message="Transcrevendo e identificando os falantes…")
-    while transcript.status in (aai.TranscriptStatus.queued, aai.TranscriptStatus.processing):
-        time.sleep(3)
-        transcript = aai.Transcript.get_by_id(transcript.id)
-
-    if transcript.status == aai.TranscriptStatus.error:
-        raise RuntimeError(f"A AssemblyAI não conseguiu transcrever: {transcript.error}")
-    if language == "auto":
-        detected = (getattr(transcript, "json_response", None) or {}).get("language_code") or ""
-        update_job(job_id, detected_language=detected.split("_")[0].lower())
-
-    return [
-        {
-            "start": utt.start / 1000,
-            "timestamp": format_timestamp(utt.start / 1000),
-            "speaker": utt.speaker,
-            "text": utt.text.strip(),
-        }
-        for utt in transcript.utterances or []
-        if utt.text.strip()
-    ]
-
-
-# --- Transcrição: Whisper local (sem falantes) ------------------------------------
-
-_whisper = None
-_whisper_model = None
-# Callback de progresso do job em andamento. Só existe uma thread de
-# transcrição, então uma variável global basta.
-_progress_callback = None
-
-
-class _ProgressBar:
-    """Substitui o tqdm.tqdm(total=<frames>) que o whisper.transcribe() usa,
-    repassando o avanço para o job atual."""
-
-    def __init__(self, total=None, **_kwargs):
-        self.total = total or 0
-        self.n = 0
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        return False
-
-    def update(self, n=1):
-        self.n += n
-        if _progress_callback and self.total:
-            _progress_callback(min(self.n / self.total, 1.0))
-
-
-def load_whisper():
-    # Importado só quando usado: o torch é pesado e desnecessário com a AssemblyAI.
-    global _whisper, _whisper_model
-    if _whisper is None:
-        try:
-            _whisper = importlib.import_module("whisper")
-        except ModuleNotFoundError:
-            raise RuntimeError(
-                "O Whisper local não está instalado. Instale com "
-                "pip install -r requirements-whisper.txt (no Docker: WHISPER=1 docker compose up "
-                "--build) ou defina ASSEMBLYAI_API_KEY no .env."
-            )
-        # "whisper.transcribe" é sobrescrito pela função de mesmo nome no
-        # __init__ do pacote; importlib devolve o módulo de fato.
-        module = importlib.import_module("whisper.transcribe")
-        module.tqdm = types.SimpleNamespace(tqdm=_ProgressBar)
-    if _whisper_model is None:
-        _whisper_model = _whisper.load_model(WHISPER_MODEL)
-    return _whisper, _whisper_model
-
-
-def transcribe_whisper(job_id, audio_path):
-    global _progress_callback
-    if _whisper_model is None:
-        update_job(
-            job_id, status="loading",
-            message=f"Carregando modelo Whisper '{WHISPER_MODEL}' (na 1ª vez ele é baixado)…",
-        )
-    whisper, model = load_whisper()
-
-    language = jobs[job_id].get("language") or DEFAULT_LANGUAGE
-    update_job(job_id, status="transcribing", message="Transcrevendo…", progress=0)
-    _progress_callback = lambda p: update_job(job_id, progress=round(p * 100, 1))
-    try:
-        result = whisper.transcribe(
-            model, audio_path, language=None if language == "auto" else language, verbose=False,
-            fp16=model.device.type == "cuda",
-        )
-    finally:
-        _progress_callback = None
-    if language == "auto":
-        update_job(job_id, detected_language=result.get("language") or "")
-
-    return [
-        {
-            "start": seg["start"],
-            "timestamp": format_timestamp(seg["start"]),
-            "speaker": None,
-            "text": seg["text"].strip(),
-        }
-        for seg in result["segments"]
-        if seg["text"].strip()
-    ]
-
-
-# --- Pautas (Claude) ---------------------------------------------------------------
-
-_ITEM = {
-    "type": "object",
-    "properties": {
-        "descricao": {"type": "string"},
-        "timestamp": {
-            "type": "string",
-            "description": "Momento da transcrição onde o assunto aparece, ex.: 12:40. "
-                           "String vazia se não houver um momento claro.",
-        },
-    },
-    "required": ["descricao", "timestamp"],
-    "additionalProperties": False,
-}
-
-PAUTAS_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "titulo": {"type": "string", "description": "Título curto da reunião."},
-        "objetivo": {"type": "string"},
-        "contexto": {"type": "string"},
-        "participantes": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "rotulo": {
-                        "type": "string",
-                        "description": "Nome exatamente como aparece na transcrição.",
-                    },
-                    "nome_sugerido": {
-                        "type": "string",
-                        "description": "Nome real inferido do diálogo, se o rótulo for "
-                                       "genérico (ex.: 'Falante A'). String vazia se "
-                                       "não der para inferir com segurança.",
-                    },
-                    "papel": {
-                        "type": "string",
-                        "description": "Papel na reunião, se ficar claro. String vazia se não.",
-                    },
-                },
-                "required": ["rotulo", "nome_sugerido", "papel"],
-                "additionalProperties": False,
-            },
-        },
-        "problemas_levantados": {"type": "array", "items": _ITEM},
-        "decisoes": {"type": "array", "items": _ITEM},
-        "solucoes_propostas": {"type": "array", "items": _ITEM},
-        "pendencias": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "descricao": {"type": "string"},
-                    "responsavel": {
-                        "type": "string",
-                        "description": "String vazia se ninguém foi designado.",
-                    },
-                    "prazo": {
-                        "type": "string",
-                        "description": "Como foi dito (ex.: 'sexta-feira'). "
-                                       "String vazia se não houve prazo.",
-                    },
-                    "timestamp": {"type": "string"},
-                },
-                "required": ["descricao", "responsavel", "prazo", "timestamp"],
-                "additionalProperties": False,
-            },
-        },
-        "proximos_passos": {"type": "array", "items": _ITEM},
-    },
-    "required": [
-        "titulo", "objetivo", "contexto", "participantes", "problemas_levantados",
-        "decisoes", "solucoes_propostas", "pendencias", "proximos_passos",
-    ],
-    "additionalProperties": False,
-}
-
-PAUTAS_SYSTEM = """Você organiza transcrições de reuniões e conversas em pautas.
-
-Cada linha da transcrição tem o formato "[MM:SS] Falante: texto". Extraia:
-- objetivo: para que a conversa aconteceu;
-- contexto: a situação de fundo necessária para entender a conversa;
-- participantes: quem falou e, se der para perceber, o papel de cada um. Quando o rótulo for genérico ("Falante A"), sugira o nome real só se o diálogo deixar isso claro (alguém chama a pessoa pelo nome, ela se apresenta etc.);
-- problemas levantados, decisões tomadas, soluções propostas, pendências (com responsável e prazo, quando ditos) e próximos passos.
-
-Use só o que foi dito na transcrição; não invente responsáveis, prazos nem decisões. Se uma seção não tiver conteúdo, deixe a lista vazia (ou a string vazia). Escreva cada item como uma frase curta e objetiva. Em "timestamp", use o momento da linha onde o assunto aparece.
-
-{idioma}"""
-
-# Em que língua a IA escreve as pautas, conforme o idioma da reunião.
-PAUTAS_IDIOMA = {
-    "pt": "Escreva todo o conteúdo em português do Brasil.",
-    "en": "A reunião foi em inglês: escreva todo o conteúdo em inglês.",
-    "es": "A reunião foi em espanhol: escreva todo o conteúdo em espanhol.",
-    "fr": "A reunião foi em francês: escreva todo o conteúdo em francês.",
-    "de": "A reunião foi em alemão: escreva todo o conteúdo em alemão.",
-    "it": "A reunião foi em italiano: escreva todo o conteúdo em italiano.",
-}
-PAUTAS_IDIOMA_DA_TRANSCRICAO = "Escreva todo o conteúdo no mesmo idioma em que a transcrição está."
-
-
-def job_language(job):
-    """Idioma efetivo da reunião: o escolhido ou, no automático, o detectado ("" se não deu)."""
-    language = job.get("language") or DEFAULT_LANGUAGE
-    return job.get("detected_language", "") if language == "auto" else language
-
-
-def pautas_system(language):
-    return PAUTAS_SYSTEM.format(idioma=PAUTAS_IDIOMA.get(language, PAUTAS_IDIOMA_DA_TRANSCRICAO))
-
-
-def generate_pautas(transcript_text, language=DEFAULT_LANGUAGE):
-    return ia.generate(transcript_text, pautas_system(language), PAUTAS_SCHEMA)
-
-
-def pautas_error(exc):
-    """Mensagem e código HTTP para uma falha ao gerar as pautas (None se desconhecida)."""
-    if isinstance(exc, ia.IAError):
-        return str(exc), 502
-    if isinstance(exc, anthropic.AuthenticationError):
-        return "A chave do Claude (Anthropic) foi recusada. Confira em IA das pautas.", 500
-    if isinstance(exc, anthropic.RateLimitError):
-        return "Limite de uso da API da Anthropic atingido. Tente de novo em instantes.", 429
-    if isinstance(exc, anthropic.APIConnectionError):
-        return "Não foi possível conectar à API da Anthropic.", 502
-    if isinstance(exc, anthropic.APIStatusError):
-        return f"Erro da API da Anthropic ({exc.status_code}): {exc.message}", 502
-    if isinstance(exc, RuntimeError):
-        return str(exc), 502
-    return None
-
-
-def run_pautas(job_id):
-    """Gera as pautas de um job concluído e guarda no histórico.
-
-    Quem chama já marcou pautas_status = "gerando". Devolve (pautas, None) ou
-    (None, (mensagem, código))."""
-    with jobs_lock:
-        transcript_text = render_transcript(jobs[job_id])
-        language = job_language(jobs[job_id])
-    try:
-        result = generate_pautas(transcript_text, language)
-    except Exception as exc:  # noqa: BLE001 — qualquer falha vira mensagem na tela
-        erro = pautas_error(exc) or (f"Erro inesperado ao gerar as pautas: {exc}", 500)
-        update_job(job_id, pautas_status="erro", pautas_error=erro[0])
-        return None, erro
-    with jobs_lock:
-        job = jobs[job_id]
-        job.update(pautas=result, pautas_status=None, pautas_error="")
-        guardar_historico(job_id, job)
-    return result, None
-
-
-def start_auto_pautas(job_id):
-    """Ao fim da transcrição, gera as pautas sozinho se a IA estiver pronta."""
-    if not ia.auto_enabled() or not ia.is_configured(ia.current_provider()):
-        return
-    with jobs_lock:
-        job = jobs[job_id]
-        if not job["segments"]:
-            return
-        job.update(pautas_status="gerando", pautas_error="")
-    # Thread própria: a IA pode levar minutos e a fila de transcrição não espera.
-    threading.Thread(target=run_pautas, args=(job_id,), daemon=True).start()
-
-
-def pautas_markdown(job):
-    p = job["pautas"]
-    out = [f"# {p['titulo'] or 'Pautas'}", ""]
-
-    def ts(item):
-        return f" [{item['timestamp']}]" if item.get("timestamp") else ""
-
-    for title, key in (("Objetivo", "objetivo"), ("Contexto", "contexto")):
-        if p[key]:
-            out += [f"## {title}", "", p[key], ""]
-
-    if p["participantes"]:
-        out += ["## Participantes", ""]
-        for part in p["participantes"]:
-            line = f"- {part['rotulo']}"
-            if part["papel"]:
-                line += f" — {part['papel']}"
-            out.append(line)
-        out.append("")
-
-    sections = (
-        ("Problemas levantados", "problemas_levantados"),
-        ("Decisões", "decisoes"),
-        ("Soluções propostas", "solucoes_propostas"),
-    )
-    for title, key in sections:
-        if p[key]:
-            out += [f"## {title}", ""] + [f"- {i['descricao']}{ts(i)}" for i in p[key]] + [""]
-
-    if p["pendencias"]:
-        out += ["## Pendências", ""]
-        for i in p["pendencias"]:
-            extras = [x for x in (
-                f"responsável: {i['responsavel']}" if i["responsavel"] else "",
-                f"prazo: {i['prazo']}" if i["prazo"] else "",
-            ) if x]
-            suffix = f" ({'; '.join(extras)})" if extras else ""
-            out.append(f"- {i['descricao']}{suffix}{ts(i)}")
-        out.append("")
-
-    if p["proximos_passos"]:
-        out += ["## Próximos passos", ""]
-        out += [f"- {i['descricao']}{ts(i)}" for i in p["proximos_passos"]] + [""]
-
-    return "\n".join(out)
-
-
-# --- Worker ----------------------------------------------------------------------
-
-def process_job(job_id):
-    job = jobs[job_id]
-    workdir = job["workdir"]
-    try:
-        update_job(job_id, status="extracting", message="Extraindo o áudio…", progress=0)
-        ext = ".mp3" if TRANSCRIBER == "assemblyai" else ".wav"
-        audio_path = os.path.join(workdir, "audio" + ext)
-        extract_audio(job["video_path"], audio_path)
-
-        if TRANSCRIBER == "assemblyai":
-            segments = transcribe_assemblyai(job_id, audio_path)
-        else:
-            segments = transcribe_whisper(job_id, audio_path)
-
-        speakers = {}
-        for seg in segments:
-            if seg["speaker"] and seg["speaker"] not in speakers:
-                speakers[seg["speaker"]] = f"Falante {seg['speaker']}"
-
-        # O áudio já não é necessário: apaga antes de avisar a página que terminou.
-        shutil.rmtree(workdir, ignore_errors=True)
-        with jobs_lock:
-            job.update(status="done", message="Transcrição concluída.",
-                       progress=100, segments=segments, speakers=speakers)
-            guardar_historico(job_id, job)
-        start_auto_pautas(job_id)
-    except Exception as exc:  # noqa: BLE001 — qualquer falha vira erro do job
-        update_job(job_id, status="error", message=str(exc))
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
-
-
-def worker():
-    while True:
-        job_id = job_queue.get()
-        try:
-            process_job(job_id)
-        finally:
-            job_queue.task_done()
-
-
-threading.Thread(target=worker, daemon=True).start()
-
-
-# --- Rotas -----------------------------------------------------------------------
-
-def get_job(job_id):
-    """Job em memória ou, depois de um reinício, do histórico. Chamar com jobs_lock."""
-    job = jobs.get(job_id)
-    if job is None:
-        job = historico.carregar(job_id)
-        if job is not None:
-            jobs[job_id] = job
-    return job
-
-
-def get_done_job(job_id):
-    """Devolve o job concluído ou None. Chamar com jobs_lock adquirido."""
-    job = get_job(job_id)
-    if job is None or job["status"] != "done":
-        return None
-    return job
-
+# --- Página e envio ----------------------------------------------------------------------
 
 @app.get("/")
 def index():
@@ -601,18 +82,17 @@ def index():
         max_minutes=MAX_DURATION_SECONDS // 60,
         max_bytes=app.config["MAX_CONTENT_LENGTH"],
         max_label=upload_limit_label(),
-        languages=LANGUAGES,
-        default_language=DEFAULT_LANGUAGE,
+        languages=transcricao.LANGUAGES,
+        default_language=transcricao.DEFAULT_LANGUAGE,
         extensions=", ".join(sorted(e.lstrip(".").upper() for e in ALLOWED_EXTENSIONS)),
         accept=",".join(sorted(ALLOWED_EXTENSIONS)),
-        engine="AssemblyAI (com identificação de falantes)" if TRANSCRIBER == "assemblyai"
-        else f"Whisper local, modelo {WHISPER_MODEL} (sem identificação de falantes)",
+        engine=transcricao.engine_label(),
     )
 
 
 @app.post("/upload")
 def upload():
-    if not ffmpeg_available():
+    if not midia.ffmpeg_available():
         return jsonify(error="ffmpeg/ffprobe não encontrado no PATH. Veja o README."), 500
 
     file = request.files.get("video")
@@ -623,8 +103,8 @@ def upload():
     if ext not in ALLOWED_EXTENSIONS:
         return jsonify(error=f"Formato não suportado: {ext or '(sem extensão)'}."), 400
 
-    language = request.form.get("idioma") or DEFAULT_LANGUAGE
-    if language not in LANGUAGES:
+    language = request.form.get("idioma") or transcricao.DEFAULT_LANGUAGE
+    if language not in transcricao.LANGUAGES:
         return jsonify(error=f"Idioma não suportado: {language}."), 400
 
     workdir = tempfile.mkdtemp(prefix="video-transcriber-")
@@ -632,7 +112,7 @@ def upload():
     file.save(video_path)
 
     try:
-        duration = get_duration(video_path)
+        duration = midia.get_duration(video_path)
     except ValueError as exc:
         shutil.rmtree(workdir, ignore_errors=True)
         return jsonify(error=str(exc)), 400
@@ -640,33 +120,22 @@ def upload():
     if duration > MAX_DURATION_SECONDS:
         shutil.rmtree(workdir, ignore_errors=True)
         return jsonify(
-            error=f"O arquivo tem {format_timestamp(duration)}; o limite é "
+            error=f"O arquivo tem {midia.format_timestamp(duration)}; o limite é "
                   f"{MAX_DURATION_SECONDS // 60} minutos."
         ), 400
 
     job_id = uuid.uuid4().hex
-    with jobs_lock:
-        jobs[job_id] = {
-            "status": "queued",
-            "message": "Aguardando na fila…",
-            "progress": 0,
-            "filename": secure_filename(file.filename) or "video",
-            "duration": duration,
-            "engine": TRANSCRIBER,
-            "created": time.time(),
-            "language": language,
-            "detected_language": "",
-            "workdir": workdir,
-            "video_path": video_path,
-            "segments": [],
-            "speakers": {},
-            "pautas": None,
-            "pautas_status": None,
-            "pautas_error": "",
-        }
-    job_queue.put(job_id)
+    trabalhos.novo_job(job_id, secure_filename(file.filename) or "video", duration,
+                       language, workdir, video_path)
     return jsonify(job_id=job_id, duration=duration)
 
+
+@app.errorhandler(413)
+def too_large(_err):
+    return jsonify(error=f"Arquivo grande demais: o limite é {upload_limit_label()}."), 413
+
+
+# --- Andamento, falantes, pautas e downloads -------------------------------------------
 
 @app.get("/status/<job_id>")
 def status(job_id):
@@ -679,7 +148,7 @@ def status(job_id):
             "message": job["message"],
             "progress": job["progress"],
             "filename": job["filename"],
-            "engine": job.get("engine") or TRANSCRIBER,
+            "engine": job.get("engine") or transcricao.TRANSCRIBER,
         }
         if job["status"] == "done":
             payload["segments"] = job["segments"]
@@ -688,7 +157,7 @@ def status(job_id):
             payload["pautas"] = job["pautas"]
             payload["pautas_status"] = job.get("pautas_status")
             payload["pautas_error"] = job.get("pautas_error", "")
-            payload["language"] = job_language(job)
+            payload["language"] = trabalhos.job_language(job)
     return jsonify(payload)
 
 
@@ -702,7 +171,7 @@ def rename_speakers(job_id):
         for code, name in names.items():
             if code in job["speakers"]:
                 job["speakers"][code] = str(name).strip()[:60] or f"Falante {code}"
-        guardar_historico(job_id, job)
+        trabalhos.guardar_historico(job_id, job)
         return jsonify(speakers=job["speakers"], text=render_transcript(job))
 
 
@@ -718,25 +187,35 @@ def pautas(job_id):
             return jsonify(error="As pautas já estão sendo geradas. Aguarde."), 409
         job.update(pautas_status="gerando", pautas_error="")
 
-    result, erro = run_pautas(job_id)
+    result, erro = trabalhos.run_pautas(job_id)
     if erro:
         return jsonify(error=erro[0]), erro[1]
     return jsonify(pautas=result)
 
 
-# --- IA das pautas -------------------------------------------------------------------
+@app.get("/download/<job_id>")
+def download(job_id):
+    kind = request.args.get("tipo", "transcricao")
+    with jobs_lock:
+        job = get_done_job(job_id)
+        if job is None:
+            return jsonify(error="Transcrição não disponível."), 404
+        name = os.path.splitext(job["filename"])[0] or "transcricao"
+        if kind == "pautas":
+            if not job["pautas"]:
+                return jsonify(error="As pautas ainda não foram geradas."), 404
+            body = pautas_mod.pautas_markdown(job["pautas"])
+            filename, mimetype = f"{name}-pautas.md", "text/markdown"
+        else:
+            body, filename, mimetype = render_transcript(job), f"{name}.txt", "text/plain"
+    return Response(
+        body + "\n",
+        mimetype=f"{mimetype}; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
-def require_same_origin(json_body=True):
-    """Só a própria página pode mudar a configuração ou apagar o histórico: outro site
-    aberto no navegador não consegue trocar a chave nem apontar as pautas para um
-    servidor dele."""
-    origin = request.headers.get("Origin")
-    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
-        abort(403)
-    if json_body and not request.is_json:
-        abort(415)
-
+# --- IA das pautas -----------------------------------------------------------------------
 
 @app.get("/ia")
 def ia_state():
@@ -784,8 +263,7 @@ def ia_openrouter():
         return jsonify(error=str(exc)), 400
 
 
-# --- Histórico ---------------------------------------------------------------------
-
+# --- Histórico ---------------------------------------------------------------------------
 
 @app.get("/historico")
 def historico_lista():
@@ -806,36 +284,10 @@ def historico_apagar(job_id):
     return jsonify(ok=True)
 
 
-@app.get("/download/<job_id>")
-def download(job_id):
-    kind = request.args.get("tipo", "transcricao")
-    with jobs_lock:
-        job = get_done_job(job_id)
-        if job is None:
-            return jsonify(error="Transcrição não disponível."), 404
-        name = os.path.splitext(job["filename"])[0] or "transcricao"
-        if kind == "pautas":
-            if not job["pautas"]:
-                return jsonify(error="As pautas ainda não foram geradas."), 404
-            body, filename, mimetype = pautas_markdown(job), f"{name}-pautas.md", "text/markdown"
-        else:
-            body, filename, mimetype = render_transcript(job), f"{name}.txt", "text/plain"
-    return Response(
-        body + "\n",
-        mimetype=f"{mimetype}; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@app.errorhandler(413)
-def too_large(_err):
-    return jsonify(error=f"Arquivo grande demais: o limite é {upload_limit_label()}."), 413
-
-
 if __name__ == "__main__":
-    if not ffmpeg_available():
+    if not midia.ffmpeg_available():
         print("AVISO: ffmpeg/ffprobe não encontrado no PATH. Instale antes de enviar vídeos.")
-    if TRANSCRIBER == "whisper":
+    if transcricao.TRANSCRIBER == "whisper":
         print("AVISO: ASSEMBLYAI_API_KEY não definida — usando Whisper local, sem "
               "identificação de falantes.")
     if not ia.is_configured(ia.current_provider()):

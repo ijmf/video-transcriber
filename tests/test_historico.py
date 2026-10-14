@@ -5,9 +5,9 @@ import time
 
 import pytest
 
-import app as app_module
 import historico
 import ia
+import trabalhos
 from dados import SEGMENTOS
 
 ORIGEM = {"Origin": "http://localhost"}
@@ -39,8 +39,8 @@ def enviar(client, audio_mp3):
 
 def reiniciar_app():
     """Simula reiniciar o servidor: some tudo que estava só na memória."""
-    with app_module.jobs_lock:
-        app_module.jobs.clear()
+    with trabalhos.jobs_lock:
+        trabalhos.jobs.clear()
 
 
 @pytest.fixture
@@ -138,7 +138,7 @@ def test_transcricao_sobrevive_a_reiniciar(client, audio_mp3, transcricao_falsa)
 
 def test_pautas_ficam_no_historico(client, job_pronto, ia_falsa):
     job_id = job_pronto()
-    historico.salvar(job_id, app_module.jobs[job_id])
+    historico.salvar(job_id, trabalhos.jobs[job_id])
     assert client.post(f"/pautas/{job_id}").status_code == 200
 
     reiniciar_app()
@@ -233,7 +233,7 @@ def test_listar_e_apagar_pela_rota(client):
 
     client.get("/status/b")  # carrega na memória, como ao abrir pela página
     assert client.delete("/historico/b", headers=ORIGEM).get_json() == {"ok": True}
-    assert "b" not in app_module.jobs
+    assert "b" not in trabalhos.jobs
     assert client.get("/status/b").status_code == 404
     assert client.delete("/historico/b").status_code == 404
     assert [t["id"] for t in client.get("/historico").get_json()["transcricoes"]] == ["a"]
@@ -246,6 +246,6 @@ def test_outro_site_nao_apaga_o_historico(client):
 
 
 def test_nao_apaga_transcricao_em_andamento(client):
-    with app_module.jobs_lock:
-        app_module.jobs["x"] = {"status": "transcribing"}
+    with trabalhos.jobs_lock:
+        trabalhos.jobs["x"] = {"status": "transcribing"}
     assert client.delete("/historico/x").status_code == 409

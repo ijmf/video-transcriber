@@ -20,6 +20,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as app_module  # noqa: E402
 import historico  # noqa: E402
 import ia  # noqa: E402
+import midia  # noqa: E402
+import trabalhos  # noqa: E402
+import transcricao  # noqa: E402
 from dados import SEGMENTOS, gerar_audio  # noqa: E402
 
 
@@ -37,11 +40,11 @@ def historico_isolado(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def jobs_limpos():
-    with app_module.jobs_lock:
-        app_module.jobs.clear()
+    with trabalhos.jobs_lock:
+        trabalhos.jobs.clear()
     yield
-    with app_module.jobs_lock:
-        app_module.jobs.clear()
+    with trabalhos.jobs_lock:
+        trabalhos.jobs.clear()
 
 
 @pytest.fixture
@@ -57,8 +60,8 @@ def job_pronto():
     def criar(segments=SEGMENTOS, pautas=None):
         job_id = "job-teste"
         speakers = {s["speaker"]: f"Falante {s['speaker']}" for s in segments if s["speaker"]}
-        with app_module.jobs_lock:
-            app_module.jobs[job_id] = {
+        with trabalhos.jobs_lock:
+            trabalhos.jobs[job_id] = {
                 "status": "done", "message": "Transcrição concluída.", "progress": 100,
                 "filename": "reuniao.mp4", "duration": 8.0, "workdir": "", "video_path": "",
                 "segments": [dict(s) for s in segments], "speakers": speakers, "pautas": pautas,
@@ -73,18 +76,18 @@ def transcricao_falsa(monkeypatch):
     """Troca a AssemblyAI por uma resposta fixa; o ffmpeg continua de verdade."""
     chamadas = []
 
-    def falsa(job_id, audio_path):
+    def falsa(audio_path, language, avisar):
         chamadas.append(audio_path)
-        app_module.update_job(job_id, status="transcribing", message="Transcrevendo…")
-        return [dict(s) for s in SEGMENTOS]
+        avisar(status="transcribing", message="Transcrevendo…")
+        return [dict(s) for s in SEGMENTOS], ""
 
-    monkeypatch.setattr(app_module, "TRANSCRIBER", "assemblyai")
-    monkeypatch.setattr(app_module, "transcribe_assemblyai", falsa)
+    monkeypatch.setattr(transcricao, "TRANSCRIBER", "assemblyai")
+    monkeypatch.setattr(transcricao, "transcribe_assemblyai", falsa)
     return chamadas
 
 
 @pytest.fixture
 def audio_mp3(tmp_path):
-    if not app_module.ffmpeg_available():
+    if not midia.ffmpeg_available():
         pytest.skip("ffmpeg/ffprobe não encontrado")
     return gerar_audio(tmp_path / "reuniao.mp3")
