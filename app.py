@@ -36,6 +36,8 @@ import ia  # noqa: E402 — lê o .env ao ser importado
 # .webm é o formato das gravações feitas pelo navegador na landing.
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".mp3", ".webm"}
 MAX_DURATION_SECONDS = 45 * 60
+# 45 minutos de vídeo de reunião em 1080p ficam entre 1 e 2 GB; o MP3, abaixo de 100 MB.
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 LANGUAGE = "pt"
 WHISPER_MODEL = "small"
 ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
@@ -45,7 +47,7 @@ ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
 TRANSCRIBER = "assemblyai" if ASSEMBLYAI_API_KEY else "whisper"
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024 * 1024  # 4 GB
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 jobs = {}
 jobs_lock = threading.Lock()
@@ -64,6 +66,12 @@ def only_local_host():
 
 
 # --- Utilitários ---------------------------------------------------------------
+
+def upload_limit_label():
+    """O limite de upload para mostrar na tela, ex.: "2 GB"."""
+    gb = app.config["MAX_CONTENT_LENGTH"] / 1024 ** 3
+    return f"{gb:g} GB".replace(".", ",") if gb >= 0.1 else f"{app.config['MAX_CONTENT_LENGTH']} bytes"
+
 
 def format_timestamp(seconds):
     seconds = int(seconds)
@@ -551,6 +559,8 @@ def index():
     return render_template(
         "index.html",
         max_minutes=MAX_DURATION_SECONDS // 60,
+        max_bytes=app.config["MAX_CONTENT_LENGTH"],
+        max_label=upload_limit_label(),
         extensions=", ".join(sorted(e.lstrip(".").upper() for e in ALLOWED_EXTENSIONS)),
         accept=",".join(sorted(ALLOWED_EXTENSIONS)),
         engine="AssemblyAI (com identificação de falantes)" if TRANSCRIBER == "assemblyai"
@@ -770,7 +780,7 @@ def download(job_id):
 
 @app.errorhandler(413)
 def too_large(_err):
-    return jsonify(error="Arquivo grande demais (limite de 4 GB)."), 413
+    return jsonify(error=f"Arquivo grande demais: o limite é {upload_limit_label()}."), 413
 
 
 if __name__ == "__main__":

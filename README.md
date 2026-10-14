@@ -6,7 +6,7 @@ Aplicação web que transcreve vídeos em português, identifica quem está fala
 
 ![Enviando o áudio de uma reunião fictícia, gerando as pautas e começando uma gravação](docs/demo.gif)
 
-- Upload de vídeos **MP4, MOV, AVI e MKV** ou áudio **MP3**, de até **45 minutos**
+- Upload de vídeos **MP4, MOV, AVI e MKV** ou áudio **MP3**, de até **45 minutos** e **2 GB**
 - **Gravar a reunião** direto na página: microfone + áudio do computador (Chrome ou Edge)
 - Extração do áudio com **ffmpeg**
 - Transcrição com **identificação de falantes** ([AssemblyAI](https://www.assemblyai.com/)), no formato `[00:00] João: texto`

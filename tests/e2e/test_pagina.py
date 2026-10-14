@@ -183,3 +183,18 @@ def test_gravar_sem_compartilhar_a_tela_grava_so_o_microfone(page: Page, app_url
     expect(page.locator("#drop")).to_be_visible()
     expect(page.locator("#work")).to_be_hidden()
     assert not transcricao_falsa
+
+
+def test_arquivo_grande_demais_avisa_antes_de_enviar(page: Page, app_url, audio_mp3, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setitem(app_module.app.config, "MAX_CONTENT_LENGTH", 1000)
+    envios = []
+    page.on("request", lambda r: envios.append(r.url) if r.url.endswith("/upload") else None)
+    page.goto(app_url)
+    expect(page.locator("#fmt")).to_contain_text("com até 45 minutos e 1000 bytes.")
+    page.set_input_files("#video", str(audio_mp3))
+    expect(page.locator("#send-status")).to_contain_text("o limite é 1000 bytes. Envie só o áudio (MP3)")
+    expect(page.locator("#work")).to_be_hidden()
+    expect(page.locator("#drop")).to_be_visible()
+    assert not envios

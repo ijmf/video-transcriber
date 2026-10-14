@@ -283,7 +283,7 @@
       <input id="video" type="file" accept=".mp4,.mov,.avi,.mkv,.mp3" aria-describedby="fmt">
       <p class="what" id="drop-what">Arraste o vídeo ou o áudio da reunião para cá</p>
       <span class="button" id="drop-btn">Escolher arquivo</span>
-      <p class="fmt" id="fmt">Vídeo MP4, MOV, AVI ou MKV, ou áudio MP3, com até 45 minutos.</p>
+      <p class="fmt" id="fmt">Vídeo MP4, MOV, AVI ou MKV, ou áudio MP3, com até 45 minutos e {{ max_label }}.</p>
     </label>
     <div class="rec" id="rec" aria-labelledby="rec-h">
       <div class="rec-idle" id="rec-idle">
@@ -380,6 +380,7 @@
 <script>
   // Enviar: o processo inteiro acontece aqui — envio, progresso, falantes, pautas e transcrição.
   const ALLOWED = [".mp4", ".mov", ".avi", ".mkv", ".mp3", ".webm"];
+  const MAX_BYTES = {{ max_bytes }}, MAX_LABEL = "{{ max_label }}";
   const STEP_ORDER = ["upload", "extracting", "prepare", "transcribing"];
   const STATUS_STEP = { queued: "upload", extracting: "extracting", uploading: "prepare", loading: "prepare", transcribing: "transcribing" };
   const OFFLINE = "Não foi possível falar com o app. Confira se o python app.py ainda está rodando e tente de novo.";
@@ -442,6 +443,11 @@
   function sendVideo(file, recordingUrl = null) {
     const ext = "." + file.name.split(".").pop().toLowerCase();
     if (!ALLOWED.includes(ext)) return failed(`Formato não suportado: ${ext}. Envie um vídeo MP4, MOV, AVI ou MKV, ou um áudio MP3.`);
+    // Avisa antes de enviar: o servidor só recusaria depois de receber o arquivo inteiro.
+    if (file.size > MAX_BYTES) {
+      const gb = (file.size / 1024 ** 3).toFixed(1).replace(".", ",");
+      return failed(`O arquivo tem ${gb} GB; o limite é ${MAX_LABEL}. Envie só o áudio (MP3) ou um vídeo em resolução menor.`);
+    }
     resetAll();
     drop.hidden = true; $("rec").hidden = true; work.hidden = false;
     const recDl = $("rec-dl");
