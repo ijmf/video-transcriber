@@ -4,6 +4,7 @@ A transcrição (AssemblyAI) e a IA das pautas são simuladas; o ffmpeg é usado
 verdade nos testes de envio (são pulados se ele não estiver instalado).
 """
 
+import io
 import os
 import time
 
@@ -265,3 +266,22 @@ def test_testar_conexao_pela_rota(client, monkeypatch):
     monkeypatch.setattr(ia, "list_models", lambda p, c, u: ["modelo-a", "modelo-b"])
     resp = client.post("/ia/testar", json={"provider": "openai", "chave": "sk-1"})
     assert resp.get_json() == {"modelos": ["modelo-a", "modelo-b"]}
+
+
+# --- Limite de tamanho do upload --------------------------------------------------------
+
+
+def test_limite_de_upload_e_2_gb(client):
+    assert app_module.app.config["MAX_CONTENT_LENGTH"] == 2 * 1024 ** 3
+    assert app_module.upload_limit_label() == "2 GB"
+    html = client.get("/").get_data(as_text=True)
+    assert "com até 45 minutos e 2 GB." in html
+    assert "const MAX_BYTES = 2147483648, MAX_LABEL = \"2 GB\";" in html
+
+
+def test_upload_acima_do_limite_de_tamanho(client, monkeypatch):
+    monkeypatch.setitem(app_module.app.config, "MAX_CONTENT_LENGTH", 1000)
+    resp = client.post("/upload", data={"video": (io.BytesIO(b"x" * 5000), "grande.mp4")})
+    assert resp.status_code == 413
+    assert resp.get_json()["error"] == "Arquivo grande demais: o limite é 1000 bytes."
+    assert not app_module.jobs
