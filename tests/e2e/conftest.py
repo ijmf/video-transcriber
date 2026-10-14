@@ -12,6 +12,7 @@ getDisplayMedia é trocado por um script que devolve vídeo de um canvas e um to
 
 import json
 import threading
+import time
 
 import pytest
 from flask import Flask, jsonify, request
@@ -56,6 +57,7 @@ def app_url():
 def ia_falsa():
     fake = Flask("ia_falsa")
     fake.pedidos = []
+    fake.ajustes = {"atraso": 0}  # segundos de espera, para ver a página "gerando"
 
     @fake.get("/v1/models")
     def modelos():
@@ -64,11 +66,13 @@ def ia_falsa():
     @fake.post("/v1/chat/completions")
     def chat():
         fake.pedidos.append(request.get_json())
+        time.sleep(fake.ajustes["atraso"])
         return jsonify(choices=[{"finish_reason": "stop",
                                  "message": {"content": json.dumps(PAUTAS_FALSAS)}}])
 
     srv = Servidor(fake)
     srv.pedidos = fake.pedidos
+    srv.ajustes = fake.ajustes
     yield srv
     srv.parar()
 

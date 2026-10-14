@@ -198,12 +198,30 @@
     .ia-status { margin: 16px 0 0; font-weight: 600; }
     .ia-status.err { color: #8a1c1c; }
     .ia-using { margin: 0 0 14px; font-size: var(--step-small); }
+    .ia-check { display: flex; align-items: flex-start; gap: 10px; font-weight: 600; cursor: pointer; }
+    .ia-check input { width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--ink); flex-shrink: 0; }
+    .ia-check small { display: block; font-weight: 400; }
+
+    /* --- Histórico ------------------------------------------------------------------ */
+    .hist { max-width: 1400px; margin: 0 auto; padding: 0 var(--margin) 80px; }
+    .hist h2 { margin: 0 0 16px; font: 400 var(--step-lead)/1 var(--display); text-transform: uppercase; }
+    .hist-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+    .hist-item { display: flex; justify-content: space-between; align-items: center; gap: 12px 20px; flex-wrap: wrap; padding: 16px 22px; background: var(--surface); }
+    .hist-item.current { outline: 3px solid var(--ink); outline-offset: -3px; }
+    .hist-item b { display: block; overflow-wrap: anywhere; }
+    .hist-item small { display: block; color: var(--muted); }
+    .hist-item .button { min-height: 40px; padding: 0 16px; }
+    .hist-item .button.ghost { background: var(--bg); }
+    .hist-status { margin: 12px 0 0; font-weight: 600; }
+    .hist-status:empty { display: none; }
+    .hist-status.err { color: #8a1c1c; }
 
     /* --- Telefone ------------------------------------------------------------ */
     @media (max-width: 760px) {
       .send { padding-top: 32px; }
       .drop { min-height: 0; }
       .run, .pane, .rec, .ia-box { padding: 22px 18px; }
+      .hist-item { padding: 16px 18px; }
       .topbar { justify-content: flex-start; }
       .rec .button { width: 100%; }
       .run-steps { grid-template-columns: 1fr 1fr; }
@@ -244,6 +262,10 @@
           <input id="ia-model" list="ia-models" autocomplete="off" spellcheck="false" placeholder="Use Testar conexão para ver os disponíveis">
           <datalist id="ia-models"></datalist>
         </div>
+        <label class="ia-check">
+          <input type="checkbox" id="ia-auto">
+          <span>Gerar as pautas assim que a transcrição terminar<small>Desligado, as pautas só são feitas quando você clicar em Organizar por pautas.</small></span>
+        </label>
       </div>
       <div class="ia-actions">
         <button type="button" class="button ghost" id="ia-test">Testar conexão</button>
@@ -348,6 +370,11 @@
       </div>
     </div>
   </section>
+  <section class="hist" id="hist" aria-labelledby="hist-h" hidden>
+    <h2 id="hist-h">Transcrições anteriores</h2>
+    <ul class="hist-list" id="hist-list"></ul>
+    <p class="hist-status" id="hist-status" aria-live="polite"></p>
+  </section>
 </main>
 
 <script>
@@ -361,7 +388,7 @@
   const drop = $("drop"), videoInput = $("video"), sendStatus = $("send-status");
   const work = $("work"), run = $("run"), results = $("results");
   const runMeter = $("run-meter"), runBar = runMeter.firstElementChild;
-  let job = null, segments = [], speakers = {}, fullText = "", pautas = null;
+  let job = null, segments = [], speakers = {}, fullText = "", pautas = null, pautasTimer = 0;
 
   function el(tag, props = {}, ...children) {
     const n = Object.assign(document.createElement(tag), props);
@@ -377,6 +404,7 @@
   }
 
   function resetAll() {
+    clearTimeout(pautasTimer);
     job = null; segments = []; speakers = {}; fullText = ""; pautas = null;
     work.hidden = true; results.hidden = true; run.hidden = false;
     drop.hidden = false; drop.classList.remove("busy"); videoInput.value = "";
@@ -386,6 +414,7 @@
     $("pautas-status").classList.remove("err");
     $("pautas-status").textContent = PAUTAS_HINT;
     delete $("pautas-go").dataset.done;
+    $("pautas-go").disabled = false;
     if (iaState) renderIASummary(); else $("pautas-go").textContent = "Organizar por pautas";
     $("pautas-copy").hidden = true; $("pautas-dl").hidden = true;
     $("spk-note").classList.remove("err");
@@ -466,6 +495,43 @@
     $("pautas-pane").hidden = !segments.length;
     renderSpeakers();
     renderTranscript();
+    applyPautasState(data);
+    loadHistory();
+  }
+  // Pautas prontas, sendo geradas sozinhas ao fim da transcrição, ou com erro.
+  function applyPautasState(data) {
+    const btn = $("pautas-go"), status = $("pautas-status");
+    clearTimeout(pautasTimer);
+    if (data.pautas) {
+      pautas = data.pautas;
+      renderPautas();
+      status.classList.remove("err"); status.textContent = "";
+      btn.dataset.done = "1"; btn.textContent = "Refazer pautas";
+      $("pautas-copy").hidden = false; $("pautas-dl").hidden = false;
+    }
+    if (data.pautas_status === "gerando") {
+      btn.disabled = true;
+      status.classList.remove("err");
+      status.textContent = `Gerando as pautas automaticamente${iaState && iaState.configurado ? " com " + iaProv(iaState.provider).nome : ""}. Costuma levar de 30 segundos a 2 minutos; a transcrição já está ao lado.`;
+      const current = job;
+      pautasTimer = setTimeout(async () => {
+        if (job !== current) return;
+        try {
+          const res = await fetch(`/status/${current}`);
+          const next = await res.json();
+          if (job === current && res.ok) applyPautasState(next);
+        } catch (_) {
+          pautasTimer = setTimeout(() => applyPautasState(data), 2000);
+        }
+      }, 2000);
+      return;
+    }
+    btn.disabled = false;
+    if (data.pautas_status === "erro") {
+      status.classList.add("err");
+      status.textContent = "Não foi possível gerar as pautas automaticamente: " + data.pautas_error;
+    }
+    if (data.pautas) loadHistory();
   }
 
   function renderTranscript() {
@@ -536,6 +602,7 @@
       status.textContent = "";
       btn.dataset.done = "1"; btn.textContent = "Refazer pautas";
       $("pautas-copy").hidden = false; $("pautas-dl").hidden = false;
+      loadHistory();
     } catch (err) {
       status.classList.add("err");
       status.textContent = err.message;
@@ -596,7 +663,67 @@
     }
   });
   $("tx-dl").addEventListener("click", () => { location.href = `/download/${job}`; });
-  $("again").addEventListener("click", () => { resetAll(); drop.scrollIntoView({ block: "center" }); });
+  // Histórico: transcrições guardadas no historico.db, que sobrevivem a reiniciar o app.
+  function fmtWhen(sec) {
+    return new Date(sec * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+  }
+  function histMsg(text, err = false) { const st = $("hist-status"); st.textContent = text; st.classList.toggle("err", err); }
+  async function loadHistory() {
+    let data;
+    try {
+      const res = await fetch("/historico");
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+    } catch (_) { return; }
+    const list = $("hist-list");
+    list.replaceChildren(...data.transcricoes.map((t) => {
+      const open = el("button", { type: "button", className: "button ghost", textContent: "Abrir" });
+      open.addEventListener("click", () => openFromHistory(t.id, t.filename));
+      const del = el("button", { type: "button", className: "button ghost", textContent: "Apagar" });
+      del.setAttribute("aria-label", `Apagar ${t.filename}`);
+      open.setAttribute("aria-label", `Abrir ${t.filename}`);
+      del.addEventListener("click", () => deleteFromHistory(t.id, t.filename));
+      const info = [fmtWhen(t.criado_em), fmtClock(t.duration), t.tem_pautas ? "com pautas" : "sem pautas"].join(" · ");
+      return el("li", { className: "hist-item" + (t.id === job ? " current" : "") },
+        el("div", {}, el("b", { textContent: t.titulo || t.filename }),
+          el("small", { textContent: t.titulo ? `${t.filename} · ${info}` : info })),
+        el("div", { className: "pane-actions" }, open, del));
+    }));
+    $("hist").hidden = !data.transcricoes.length;
+  }
+  async function openFromHistory(id, filename) {
+    let data;
+    try {
+      const res = await fetch(`/status/${id}`);
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+    } catch (err) {
+      return histMsg("Não foi possível abrir: " + err.message, true);
+    }
+    histMsg("");
+    resetAll();
+    job = id;
+    drop.hidden = true; $("rec").hidden = true; work.hidden = false;
+    $("rec-dl").hidden = true;
+    $("run-file").textContent = filename;
+    showResults(data);
+    work.scrollIntoView({ block: "start" });
+  }
+  async function deleteFromHistory(id, filename) {
+    if (!confirm(`Apagar "${filename}" do histórico? A transcrição e as pautas serão perdidas.`)) return;
+    try {
+      const res = await fetch(`/historico/${id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+    } catch (err) {
+      return histMsg("Não foi possível apagar: " + err.message, true);
+    }
+    histMsg("");
+    if (id === job) resetAll();
+    loadHistory();
+  }
+  loadHistory();
+  $("again").addEventListener("click", () => { resetAll(); loadHistory(); drop.scrollIntoView({ block: "center" }); });
 
   videoInput.addEventListener("change", () => { if (videoInput.files[0]) sendVideo(videoInput.files[0]); });
   ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
@@ -651,6 +778,7 @@
     $("ia-key-link").href = p.chave_url;
     $("ia-key-saved").textContent = p.chave_final ? ` · salva, termina em ${p.chave_final}` : "";
     $("ia-url").value = iaState.ollama_url;
+    $("ia-auto").checked = iaState.pautas_auto;
     $("ia-model").value = p.modelo || "";
     $("ia-models").replaceChildren();
   }
@@ -687,7 +815,7 @@
   async function iaSave() {
     const btn = $("ia-save"); btn.disabled = true;
     try {
-      iaState = await iaPost("/ia", { provider: iaPick, chave: $("ia-key").value, modelo: $("ia-model").value, ollama_url: $("ia-url").value });
+      iaState = await iaPost("/ia", { provider: iaPick, chave: $("ia-key").value, modelo: $("ia-model").value, ollama_url: $("ia-url").value, pautas_auto: $("ia-auto").checked });
       renderIASummary(); renderIAOptions(); renderIAFields();
       const p = iaProv(iaPick);
       iaMsg(iaState.configurado ? `Salvo. As pautas serão feitas por ${p.nome}.`

@@ -115,6 +115,12 @@ def _base_url(provider, cfg):
     return PROVIDERS[provider]["base"]
 
 
+def auto_enabled(cfg=None):
+    """Gerar as pautas assim que a transcrição termina (ligado se nunca foi mudado)."""
+    cfg = load_config() if cfg is None else cfg
+    return cfg.get("pautas_auto", True) is not False
+
+
 def is_configured(provider, cfg=None):
     cfg = load_config() if cfg is None else cfg
     if provider == "ollama":
@@ -133,6 +139,7 @@ def public_state():
     return {
         "provider": provider,
         "configurado": is_configured(provider, cfg),
+        "pautas_auto": auto_enabled(cfg),
         "ollama_url": ollama_url(cfg),
         "providers": [
             {
@@ -171,6 +178,8 @@ def update(data):
             if not re.match(r"^https?://", url.strip()):
                 raise IAError("O endereço do Ollama deve começar com http:// ou https://.")
             cfg["ollama_url"] = url.strip().rstrip("/")
+        if isinstance(data.get("pautas_auto"), bool):
+            cfg["pautas_auto"] = data["pautas_auto"]
         _save_config(cfg)
     return public_state()
 

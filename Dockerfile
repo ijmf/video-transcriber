@@ -12,6 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     PORT=5000 \
     IA_CONFIG=/dados/ia_config.json \
+    HISTORICO_DB=/dados/historico.db \
     XDG_CACHE_HOME=/dados/cache
 
 RUN apt-get update \
@@ -27,10 +28,11 @@ RUN pip install -r requirements.txt \
          && pip install -r requirements-whisper.txt; \
        fi
 
-COPY app.py ia.py ./
+COPY app.py ia.py historico.py ./
 COPY templates ./templates
 
-# /dados guarda a escolha da IA (ia_config.json) e o modelo do Whisper baixado.
+# /dados guarda a escolha da IA (ia_config.json), o histórico (historico.db)
+# e o modelo do Whisper baixado.
 RUN useradd --create-home --uid 1000 app \
     && mkdir -p /dados && chown app:app /dados
 USER app

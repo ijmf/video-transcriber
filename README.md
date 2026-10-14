@@ -12,6 +12,8 @@ Aplicação web que transcreve vídeos em português, identifica quem está fala
 - Transcrição com **identificação de falantes** ([AssemblyAI](https://www.assemblyai.com/)), no formato `[00:00] João: texto`
 - Renomear os falantes ("Falante A" → "João"); a IA sugere nomes quando eles aparecem na conversa
 - **Organização por pautas** com a IA que você preferir (Claude, ChatGPT, Gemini, OpenRouter ou Ollama local): objetivo, contexto, participantes, problemas levantados, decisões, soluções propostas, pendências (responsável e prazo) e próximos passos, cada item com o timestamp onde foi falado
+- **Pautas automáticas**: assim que a transcrição termina, a IA já organiza as pautas (dá para desligar)
+- **Histórico**: as transcrições e pautas ficam guardadas no computador e sobrevivem a reiniciar o app; dá para reabrir ou apagar
 - Copiar ou baixar a transcrição (`.txt`) e as pautas (`.md`)
 - Sem chave da AssemblyAI, a transcrição roda no **Whisper local** (modelo `small`), sem identificação de falantes
 
@@ -78,7 +80,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Abra http://127.0.0.1:5000. A porta fica publicada só em `127.0.0.1`, então o app continua acessível apenas deste computador. A escolha da IA e o modelo do Whisper ficam no volume `dados` e sobrevivem a atualizações da imagem (`git pull` e `docker compose up -d --build`).
+Abra http://127.0.0.1:5000. A porta fica publicada só em `127.0.0.1`, então o app continua acessível apenas deste computador. A escolha da IA, o histórico e o modelo do Whisper ficam no volume `dados` e sobrevivem a atualizações da imagem (`git pull` e `docker compose up -d --build`).
 
 - Sem chave da AssemblyAI, construa a imagem com o Whisper local (CPU; a imagem passa de ~0,9 GB para ~3,6 GB): `WHISPER=1 docker compose up -d --build`.
 - Ollama instalado fora do Docker: em **IA das pautas**, use o endereço `http://host.docker.internal:11434`.
@@ -96,8 +98,10 @@ Abra http://127.0.0.1:5000 e envie um vídeo ou áudio, ou clique em **Gravar re
 Quando a transcrição terminar, tudo aparece na mesma página:
 
 1. Em **Quem está falando**, dê nome a cada falante e clique em **Salvar nomes**.
-2. Em **Pautas**, clique em **Organizar por pautas** (leva de 30 s a 2 min).
+2. Em **Pautas**, as pautas aparecem sozinhas em 30 s a 2 min, se a IA estiver configurada. Depois de renomear os falantes, clique em **Refazer pautas** para usar os nomes. Para gerar só quando quiser, desmarque **Gerar as pautas assim que a transcrição terminar** em **IA das pautas**.
 3. Copie ou baixe a transcrição e as pautas.
+
+Em **Transcrições anteriores**, no fim da página, ficam todas as transcrições já feitas: **Abrir** mostra de novo a transcrição, os falantes e as pautas; **Apagar** remove do computador. Elas ficam no arquivo `historico.db`, ao lado do app, que está no `.gitignore` (tem o conteúdo das suas reuniões).
 
 ## Custos aproximados (vídeo de 45 min)
 
@@ -114,10 +118,11 @@ O custo das pautas depende da IA e do modelo escolhidos em **IA das pautas**. Co
 2. Uma thread de trabalho processa um vídeo por vez: `ffmpeg` extrai o áudio → AssemblyAI transcreve com `speaker_labels` (ou o Whisper local, sem falantes).
 3. A página consulta `GET /status/<job_id>` a cada segundo para mostrar o progresso.
 4. `POST /speakers/<job_id>` renomeia os falantes.
-5. `POST /pautas/<job_id>` envia a transcrição à IA escolhida (`ia.py`), que devolve as pautas em JSON estruturado. `GET/POST /ia` lê e salva a escolha; `POST /ia/testar` lista os modelos da conta.
+5. Ao fim da transcrição, uma thread envia a transcrição à IA escolhida (`ia.py`), que devolve as pautas em JSON estruturado; `POST /pautas/<job_id>` refaz sob demanda. `GET/POST /ia` lê e salva a escolha; `POST /ia/testar` lista os modelos da conta.
 6. `GET /download/<job_id>` devolve a transcrição (`.txt`); com `?tipo=pautas`, as pautas (`.md`).
+7. Cada transcrição concluída, os nomes dos falantes e as pautas são gravados em SQLite (`historico.py`). `GET /historico` lista; `DELETE /historico/<job_id>` apaga.
 
-Os arquivos temporários são apagados ao fim de cada job. Os resultados ficam só em memória: reiniciar o servidor os descarta.
+Os arquivos de vídeo e áudio são apagados ao fim de cada job; só o texto fica no histórico. Uma transcrição em andamento quando o servidor é reiniciado se perde.
 
 ## Testes
 
@@ -132,7 +137,7 @@ python -m pytest
 
 Para usar o Chrome instalado em vez de baixar o Chromium: `python -m pytest --browser-channel chrome`. Para ver o navegador: `--headed --slowmo 300`.
 
-Os testes nunca usam o seu `ia_config.json` nem as chaves do `.env`. No GitHub, o workflow [Testes](.github/workflows/testes.yml) roda tudo a cada push e PR, e o `pip-audit` confere as dependências (também toda segunda-feira).
+Os testes nunca usam o seu `ia_config.json`, o seu `historico.db` nem as chaves do `.env`. No GitHub, o workflow [Testes](.github/workflows/testes.yml) roda tudo a cada push e PR, e o `pip-audit` confere as dependências (também toda segunda-feira).
 
 ## Estrutura
 
@@ -140,6 +145,7 @@ Os testes nunca usam o seu `ia_config.json` nem as chaves do `.env`. No GitHub, 
 video-transcriber/
 ├── app.py              # servidor Flask, fila de transcrição e pautas
 ├── ia.py               # provedores de IA das pautas (Claude, OpenAI, Gemini, OpenRouter, Ollama)
+├── historico.py        # histórico das transcrições em SQLite (historico.db)
 ├── requirements.txt          # dependências do app
 ├── requirements-whisper.txt  # Whisper local (opcional)
 ├── requirements-dev.txt      # testes e auditoria

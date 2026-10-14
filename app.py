@@ -30,6 +30,7 @@ from werkzeug.utils import secure_filename
 
 load_dotenv()
 
+import historico  # noqa: E402
 import ia  # noqa: E402 — lê o .env ao ser importado
 
 # .webm é o formato das gravações feitas pelo navegador na landing.
@@ -148,6 +149,14 @@ def extract_audio(video_path, audio_path):
     if result.returncode != 0:
         tail = "\n".join(result.stderr.strip().splitlines()[-5:])
         raise RuntimeError(f"Falha ao extrair o áudio com ffmpeg:\n{tail}")
+
+
+def guardar_historico(job_id, job):
+    """Grava no histórico sem derrubar o job se o disco falhar: o resultado continua na tela."""
+    try:
+        historico.salvar(job_id, job)
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Não foi possível gravar a transcrição %s no histórico", job_id)
 
 
 def update_job(job_id, **fields):
@@ -374,6 +383,56 @@ def generate_pautas(transcript_text):
     return ia.generate(transcript_text, PAUTAS_SYSTEM, PAUTAS_SCHEMA)
 
 
+def pautas_error(exc):
+    """Mensagem e código HTTP para uma falha ao gerar as pautas (None se desconhecida)."""
+    if isinstance(exc, ia.IAError):
+        return str(exc), 502
+    if isinstance(exc, anthropic.AuthenticationError):
+        return "A chave do Claude (Anthropic) foi recusada. Confira em IA das pautas.", 500
+    if isinstance(exc, anthropic.RateLimitError):
+        return "Limite de uso da API da Anthropic atingido. Tente de novo em instantes.", 429
+    if isinstance(exc, anthropic.APIConnectionError):
+        return "Não foi possível conectar à API da Anthropic.", 502
+    if isinstance(exc, anthropic.APIStatusError):
+        return f"Erro da API da Anthropic ({exc.status_code}): {exc.message}", 502
+    if isinstance(exc, RuntimeError):
+        return str(exc), 502
+    return None
+
+
+def run_pautas(job_id):
+    """Gera as pautas de um job concluído e guarda no histórico.
+
+    Quem chama já marcou pautas_status = "gerando". Devolve (pautas, None) ou
+    (None, (mensagem, código))."""
+    with jobs_lock:
+        transcript_text = render_transcript(jobs[job_id])
+    try:
+        result = generate_pautas(transcript_text)
+    except Exception as exc:  # noqa: BLE001 — qualquer falha vira mensagem na tela
+        erro = pautas_error(exc) or (f"Erro inesperado ao gerar as pautas: {exc}", 500)
+        update_job(job_id, pautas_status="erro", pautas_error=erro[0])
+        return None, erro
+    with jobs_lock:
+        job = jobs[job_id]
+        job.update(pautas=result, pautas_status=None, pautas_error="")
+        guardar_historico(job_id, job)
+    return result, None
+
+
+def start_auto_pautas(job_id):
+    """Ao fim da transcrição, gera as pautas sozinho se a IA estiver pronta."""
+    if not ia.auto_enabled() or not ia.is_configured(ia.current_provider()):
+        return
+    with jobs_lock:
+        job = jobs[job_id]
+        if not job["segments"]:
+            return
+        job.update(pautas_status="gerando", pautas_error="")
+    # Thread própria: a IA pode levar minutos e a fila de transcrição não espera.
+    threading.Thread(target=run_pautas, args=(job_id,), daemon=True).start()
+
+
 def pautas_markdown(job):
     p = job["pautas"]
     out = [f"# {p['titulo'] or 'Pautas'}", ""]
@@ -442,10 +501,13 @@ def process_job(job_id):
             if seg["speaker"] and seg["speaker"] not in speakers:
                 speakers[seg["speaker"]] = f"Falante {seg['speaker']}"
 
-        update_job(
-            job_id, status="done", message="Transcrição concluída.",
-            progress=100, segments=segments, speakers=speakers,
-        )
+        # O áudio já não é necessário: apaga antes de avisar a página que terminou.
+        shutil.rmtree(workdir, ignore_errors=True)
+        with jobs_lock:
+            job.update(status="done", message="Transcrição concluída.",
+                       progress=100, segments=segments, speakers=speakers)
+            guardar_historico(job_id, job)
+        start_auto_pautas(job_id)
     except Exception as exc:  # noqa: BLE001 — qualquer falha vira erro do job
         update_job(job_id, status="error", message=str(exc))
     finally:
@@ -466,9 +528,19 @@ threading.Thread(target=worker, daemon=True).start()
 
 # --- Rotas -----------------------------------------------------------------------
 
+def get_job(job_id):
+    """Job em memória ou, depois de um reinício, do histórico. Chamar com jobs_lock."""
+    job = jobs.get(job_id)
+    if job is None:
+        job = historico.carregar(job_id)
+        if job is not None:
+            jobs[job_id] = job
+    return job
+
+
 def get_done_job(job_id):
     """Devolve o job concluído ou None. Chamar com jobs_lock adquirido."""
-    job = jobs.get(job_id)
+    job = get_job(job_id)
     if job is None or job["status"] != "done":
         return None
     return job
@@ -524,11 +596,15 @@ def upload():
             "progress": 0,
             "filename": secure_filename(file.filename) or "video",
             "duration": duration,
+            "engine": TRANSCRIBER,
+            "created": time.time(),
             "workdir": workdir,
             "video_path": video_path,
             "segments": [],
             "speakers": {},
             "pautas": None,
+            "pautas_status": None,
+            "pautas_error": "",
         }
     job_queue.put(job_id)
     return jsonify(job_id=job_id, duration=duration)
@@ -537,7 +613,7 @@ def upload():
 @app.get("/status/<job_id>")
 def status(job_id):
     with jobs_lock:
-        job = jobs.get(job_id)
+        job = get_job(job_id)
         if job is None:
             return jsonify(error="Job não encontrado."), 404
         payload = {
@@ -545,12 +621,15 @@ def status(job_id):
             "message": job["message"],
             "progress": job["progress"],
             "filename": job["filename"],
-            "engine": TRANSCRIBER,
+            "engine": job.get("engine") or TRANSCRIBER,
         }
         if job["status"] == "done":
             payload["segments"] = job["segments"]
             payload["speakers"] = job["speakers"]
             payload["text"] = render_transcript(job)
+            payload["pautas"] = job["pautas"]
+            payload["pautas_status"] = job.get("pautas_status")
+            payload["pautas_error"] = job.get("pautas_error", "")
     return jsonify(payload)
 
 
@@ -564,6 +643,7 @@ def rename_speakers(job_id):
         for code, name in names.items():
             if code in job["speakers"]:
                 job["speakers"][code] = str(name).strip()[:60] or f"Falante {code}"
+        guardar_historico(job_id, job)
         return jsonify(speakers=job["speakers"], text=render_transcript(job))
 
 
@@ -573,43 +653,29 @@ def pautas(job_id):
         job = get_done_job(job_id)
         if job is None:
             return jsonify(error="Transcrição não disponível."), 404
-        transcript_text = render_transcript(job)
+        if not render_transcript(job).strip():
+            return jsonify(error="A transcrição está vazia."), 400
+        if job.get("pautas_status") == "gerando":
+            return jsonify(error="As pautas já estão sendo geradas. Aguarde."), 409
+        job.update(pautas_status="gerando", pautas_error="")
 
-    if not transcript_text.strip():
-        return jsonify(error="A transcrição está vazia."), 400
-
-    try:
-        result = generate_pautas(transcript_text)
-    except ia.IAError as exc:
-        return jsonify(error=str(exc)), 502
-    except anthropic.AuthenticationError:
-        return jsonify(error="A chave do Claude (Anthropic) foi recusada. "
-                             "Confira em IA das pautas."), 500
-    except anthropic.RateLimitError:
-        return jsonify(error="Limite de uso da API da Anthropic atingido. "
-                             "Tente de novo em instantes."), 429
-    except anthropic.APIConnectionError:
-        return jsonify(error="Não foi possível conectar à API da Anthropic."), 502
-    except anthropic.APIStatusError as exc:
-        return jsonify(error=f"Erro da API da Anthropic ({exc.status_code}): {exc.message}"), 502
-    except RuntimeError as exc:
-        return jsonify(error=str(exc)), 502
-
-    with jobs_lock:
-        job["pautas"] = result
+    result, erro = run_pautas(job_id)
+    if erro:
+        return jsonify(error=erro[0]), erro[1]
     return jsonify(pautas=result)
 
 
 # --- IA das pautas -------------------------------------------------------------------
 
 
-def require_same_origin():
-    """Só a própria página pode mudar a configuração: outro site aberto no navegador
-    não consegue trocar a chave nem apontar as pautas para um servidor dele."""
+def require_same_origin(json_body=True):
+    """Só a própria página pode mudar a configuração ou apagar o histórico: outro site
+    aberto no navegador não consegue trocar a chave nem apontar as pautas para um
+    servidor dele."""
     origin = request.headers.get("Origin")
     if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
         abort(403)
-    if not request.is_json:
+    if json_body and not request.is_json:
         abort(415)
 
 
@@ -657,6 +723,28 @@ def ia_openrouter():
         return jsonify(ia.openrouter_exchange(data["code"], data["verifier"]))
     except ia.IAError as exc:
         return jsonify(error=str(exc)), 400
+
+
+# --- Histórico ---------------------------------------------------------------------
+
+
+@app.get("/historico")
+def historico_lista():
+    return jsonify(transcricoes=historico.listar())
+
+
+@app.delete("/historico/<job_id>")
+def historico_apagar(job_id):
+    require_same_origin(json_body=False)
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job is not None and (job["status"] != "done" or job.get("pautas_status") == "gerando"):
+            return jsonify(error="Espere esta transcrição terminar para apagar."), 409
+        jobs.pop(job_id, None)
+        apagado = historico.apagar(job_id)
+    if not apagado and job is None:
+        return jsonify(error="Transcrição não encontrada."), 404
+    return jsonify(ok=True)
 
 
 @app.get("/download/<job_id>")
