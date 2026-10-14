@@ -32,8 +32,9 @@ RUN pip install -r requirements.txt \
          && pip install -r /tmp/whisper-cpu.txt && rm /tmp/whisper-cpu.txt; \
        fi
 
-COPY app.py ia.py historico.py ./
+COPY *.py ./
 COPY templates ./templates
+COPY static ./static
 
 # /dados guarda a escolha da IA (ia_config.json), o histórico (historico.db)
 # e o modelo do Whisper baixado.

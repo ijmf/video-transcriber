@@ -116,10 +116,10 @@ O custo das pautas depende da IA e do modelo escolhidos em **IA das pautas**. Co
 ## Como funciona
 
 1. `POST /upload` recebe o vídeo, valida extensão e duração (via `ffprobe`) e cria um job.
-2. Uma thread de trabalho processa um vídeo por vez: `ffmpeg` extrai o áudio → AssemblyAI transcreve com `speaker_labels` (ou o Whisper local, sem falantes).
+2. Uma thread de trabalho (`trabalhos.py`) processa um vídeo por vez: `ffmpeg` extrai o áudio → AssemblyAI transcreve com `speaker_labels` (ou o Whisper local, sem falantes).
 3. A página consulta `GET /status/<job_id>` a cada segundo para mostrar o progresso.
 4. `POST /speakers/<job_id>` renomeia os falantes.
-5. Ao fim da transcrição, uma thread envia a transcrição à IA escolhida (`ia.py`), que devolve as pautas em JSON estruturado; `POST /pautas/<job_id>` refaz sob demanda. `GET/POST /ia` lê e salva a escolha; `POST /ia/testar` lista os modelos da conta.
+5. Ao fim da transcrição, uma thread envia a transcrição à IA escolhida (`pautas.py` monta o pedido, `ia.py` fala com o provedor), que devolve as pautas em JSON estruturado; `POST /pautas/<job_id>` refaz sob demanda. `GET/POST /ia` lê e salva a escolha; `POST /ia/testar` lista os modelos da conta.
 6. `GET /download/<job_id>` devolve a transcrição (`.txt`); com `?tipo=pautas`, as pautas (`.md`).
 7. Cada transcrição concluída, os nomes dos falantes e as pautas são gravados em SQLite (`historico.py`). `GET /historico` lista; `DELETE /historico/<job_id>` apaga.
 
@@ -158,8 +158,12 @@ Gere na ordem acima: os outros dois usam as versões do `requirements.txt`. O `p
 
 ```
 video-transcriber/
-├── app.py              # servidor Flask, fila de transcrição e pautas
+├── app.py              # servidor Flask: só as rotas
+├── midia.py            # ffmpeg: duração e extração do áudio
+├── transcricao.py      # AssemblyAI e Whisper, idiomas
+├── pautas.py           # pedido à IA (JSON) e Markdown das pautas
 ├── ia.py               # provedores de IA das pautas (Claude, OpenAI, Gemini, OpenRouter, Ollama)
+├── trabalhos.py        # fila, estado dos jobs e pautas automáticas
 ├── historico.py        # histórico das transcrições em SQLite (historico.db)
 ├── requirements.in           # dependências do app (versões mínimas)
 ├── requirements.txt          # versões travadas, geradas do .in
@@ -176,7 +180,10 @@ video-transcriber/
 ├── README.md
 ├── LICENSE             # licença MIT
 ├── templates/
-│   └── index.html      # página única (HTML + CSS + JS)
+│   └── index.html      # página única (HTML)
+├── static/
+│   ├── estilo.css
+│   └── js/             # comum, envio, ia, historico, gravacao (nesta ordem)
 ├── tests/              # pytest; tests/e2e com Playwright
 └── .github/workflows/
     └── testes.yml      # CI: testes, pip-audit e imagem Docker

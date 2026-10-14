@@ -5,13 +5,19 @@ verdade nos testes de envio (são pulados se ele não estiver instalado).
 """
 
 import io
+import json
 import os
+import re
 import time
 
 import pytest
 
 import app as app_module
 import ia
+import midia
+import pautas
+import trabalhos
+import transcricao
 from dados import SEGMENTOS, gerar_audio
 
 ORIGEM = {"Origin": "http://localhost"}
@@ -34,7 +40,7 @@ def esperar_job(client, job_id, limite=30):
     (0, "00:00"), (59.9, "00:59"), (61, "01:01"), (3600, "01:00:00"), (3725, "01:02:05"),
 ])
 def test_format_timestamp(segundos, esperado):
-    assert app_module.format_timestamp(segundos) == esperado
+    assert midia.format_timestamp(segundos) == esperado
 
 
 def test_render_transcript_com_e_sem_falante():
@@ -42,17 +48,17 @@ def test_render_transcript_com_e_sem_falante():
         {"timestamp": "00:00", "speaker": "A", "text": "Oi"},
         {"timestamp": "00:02", "speaker": None, "text": "Sem falante"},
     ]}
-    assert app_module.render_transcript(job) == "[00:00] Ana: Oi\n[00:02] Sem falante"
+    assert trabalhos.render_transcript(job) == "[00:00] Ana: Oi\n[00:02] Sem falante"
 
 
 def test_whisper_nao_instalado_da_mensagem_clara(monkeypatch):
     def sem_modulo(nome):
         raise ModuleNotFoundError(nome)
 
-    monkeypatch.setattr(app_module, "_whisper", None)
-    monkeypatch.setattr(app_module.importlib, "import_module", sem_modulo)
+    monkeypatch.setattr(transcricao, "_whisper", None)
+    monkeypatch.setattr(transcricao.importlib, "import_module", sem_modulo)
     with pytest.raises(RuntimeError, match="requirements-whisper.txt"):
-        app_module.load_whisper()
+        transcricao.load_whisper()
 
 
 # --- Proteção contra DNS rebinding e outros sites --------------------------------------
@@ -103,7 +109,7 @@ def test_upload_arquivo_corrompido(client, tmp_path, audio_mp3):
     with open(falso, "rb") as fh:
         resp = client.post("/upload", data={"video": (fh, "video.mp4")})
     assert resp.status_code == 400
-    assert not app_module.jobs
+    assert not trabalhos.jobs
 
 
 def test_upload_acima_do_limite_de_duracao(client, monkeypatch, audio_mp3):
@@ -127,27 +133,27 @@ def test_upload_transcreve_e_apaga_a_pasta_temporaria(client, audio_mp3, transcr
     assert dados["speakers"] == {"A": "Falante A", "B": "Falante B"}
     assert dados["text"].splitlines()[0] == "[00:00] Falante A: " + SEGMENTOS[0]["text"]
     assert transcricao_falsa[0].endswith("audio.mp3")
-    assert not os.path.exists(app_module.jobs[corpo["job_id"]]["workdir"])
+    assert not os.path.exists(trabalhos.jobs[corpo["job_id"]]["workdir"])
 
 
 def test_falha_na_transcricao_vira_erro_do_job(client, audio_mp3, monkeypatch):
-    def quebra(job_id, audio_path):
+    def quebra(audio_path, language, avisar):
         raise RuntimeError("A AssemblyAI não conseguiu transcrever: áudio mudo")
 
-    monkeypatch.setattr(app_module, "TRANSCRIBER", "assemblyai")
-    monkeypatch.setattr(app_module, "transcribe_assemblyai", quebra)
+    monkeypatch.setattr(transcricao, "TRANSCRIBER", "assemblyai")
+    monkeypatch.setattr(transcricao, "transcribe_assemblyai", quebra)
     with open(audio_mp3, "rb") as fh:
         job_id = client.post("/upload", data={"video": (fh, "reuniao.mp3")}).get_json()["job_id"]
     dados = esperar_job(client, job_id)
     assert dados["status"] == "error"
     assert "áudio mudo" in dados["message"]
-    assert not os.path.exists(app_module.jobs[job_id]["workdir"])
+    assert not os.path.exists(trabalhos.jobs[job_id]["workdir"])
 
 
 def test_duracao_lendo_o_audio_inteiro(tmp_path, audio_mp3):
     # Caminho usado nas gravações do MediaRecorder, que não trazem a duração no cabeçalho.
     webm = gerar_audio(tmp_path / "gravacao.webm", segundos=3)
-    assert 2.5 < app_module.decoded_duration(str(webm)) < 3.5
+    assert 2.5 < midia.decoded_duration(str(webm)) < 3.5
 
 
 # --- Status, falantes, pautas e downloads --------------------------------------------
@@ -230,7 +236,7 @@ def test_pautas_markdown_completo():
                        {"descricao": "Revisar"}],
         "proximos_passos": [{"descricao": "Nova reunião"}],
     })
-    md = app_module.pautas_markdown({"pautas": p})
+    md = pautas.pautas_markdown(p)
     assert md.startswith("# Reunião\n\n## Objetivo\n\nDecidir\n\n## Contexto\n\nAtraso")
     assert "- Ana — gerente\n- Bruno\n" in md
     assert "- Atraso [01:00]" in md
@@ -276,7 +282,22 @@ def test_limite_de_upload_e_2_gb(client):
     assert app_module.upload_limit_label() == "2 GB"
     html = client.get("/").get_data(as_text=True)
     assert "com até 45 minutos e 2&nbsp;GB." in html
-    assert "const MAX_BYTES = 2147483648, MAX_LABEL = \"2 GB\";" in html
+    config = json.loads(re.search(r'<script id="config" type="application/json">(.*?)</script>',
+                                  html).group(1))
+    assert config["maxBytes"] == 2147483648 and config["maxLabel"] == "2 GB"
+    assert config["languages"]["auto"] == "Detectar automaticamente"
+
+
+def test_estilo_e_scripts_da_pagina(client):
+    html = client.get("/").get_data(as_text=True)
+    caminhos = re.findall(r'(?:href|src)="(/static/[^"]+)"', html)
+    assert caminhos == ["/static/estilo.css", "/static/js/comum.js", "/static/js/envio.js",
+                        "/static/js/ia.js", "/static/js/historico.js", "/static/js/gravacao.js"]
+    for caminho in caminhos:
+        resp = client.get(caminho)
+        assert resp.status_code == 200, caminho
+        resp.close()
+    assert client.get("/static/estilo.css", headers={"Host": "evil.example"}).status_code == 403
 
 
 def test_upload_acima_do_limite_de_tamanho(client, monkeypatch):
@@ -284,4 +305,4 @@ def test_upload_acima_do_limite_de_tamanho(client, monkeypatch):
     resp = client.post("/upload", data={"video": (io.BytesIO(b"x" * 5000), "grande.mp4")})
     assert resp.status_code == 413
     assert resp.get_json()["error"] == "Arquivo grande demais: o limite é 1000 bytes."
-    assert not app_module.jobs
+    assert not trabalhos.jobs

@@ -72,6 +72,7 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/)" = 200
           test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' http://127.0.0.1:5000/)" = 403
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/historico)" = 200  # grava em /dados
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/static/js/comum.js)" = 200
           docker exec vt ffprobe -version >/dev/null
       - name: Log do container
         if: always()
